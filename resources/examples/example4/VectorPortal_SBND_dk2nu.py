@@ -107,20 +107,54 @@ print(f"Reading {len(dk2nu_files)} dk2nu file(s) ...")
 dk2nu_data = read_dk2nu(dk2nu_files, parent_pdg=[PTYPE_PIPLUS])
 print_summary(dk2nu_data)
 
+# ---------------------------------------------------------------------------
+# 2. Load SBND detector (needed before CSV so we know the coordinate transform)
+# ---------------------------------------------------------------------------
+print("\nLoading SBND detector model ...")
+detector_model = utilities.load_detector("SBN", detector="SBND")
+
+# dk2nu positions are in BNB (geometry) coordinates (cm).
+# SIREN's injector works in detector-local coordinates (m).
+# Transform: r_det = R^T @ (r_bnb - DetectorOrigin)
+det_origin = detector_model.DetectorOrigin.get()
+det_rot = detector_model.DetectorRotation
+
+det_origin_m = np.array([det_origin.GetX(), det_origin.GetY(), det_origin.GetZ()])
+det_origin_cm = det_origin_m * 100.0
+
+# Build rotation matrix from quaternion (det->geo active rotation)
+w, x, y, z = det_rot.W, det_rot.X, det_rot.Y, det_rot.Z
+R = np.array([
+    [1 - 2*(y*y + z*z), 2*(x*y - z*w),     2*(x*z + y*w)],
+    [2*(x*y + z*w),     1 - 2*(x*x + z*z), 2*(y*z - x*w)],
+    [2*(x*z - y*w),     2*(y*z + x*w),     1 - 2*(x*x + y*y)],
+])
+
+print(f"  DetectorOrigin (BNB frame): ({det_origin_m[0]:.3f}, {det_origin_m[1]:.3f}, {det_origin_m[2]:.3f}) m")
+
+def bnb_cm_to_detector_cm(vx_cm, vy_cm, vz_cm):
+    """Transform BNB (geometry) coordinates to detector-local coordinates, both in cm.
+
+    ToGeo:  r_geo = R @ r_det + origin
+    Invert: r_det = R^T @ (r_geo - origin)
+    """
+    r_bnb = np.column_stack([vx_cm, vy_cm, vz_cm])
+    r_det = (r_bnb - det_origin_cm[np.newaxis, :]) @ R  # (N,3) @ (3,3) = R^T applied row-wise
+    return r_det[:, 0], r_det[:, 1], r_det[:, 2]
+
 csv_file = tempfile.NamedTemporaryFile(
     suffix=".csv", delete=False, prefix="dk2nu_pions_"
 )
 csv_path = csv_file.name
 csv_file.close()
 
-n_pions = dk2nu_to_csv(dk2nu_data, csv_path, units_cm=False)
+# position_transform works in cm; units_cm=False converts the result to meters
+n_pions = dk2nu_to_csv(
+    dk2nu_data, csv_path,
+    position_transform=bnb_cm_to_detector_cm,
+    units_cm=False,
+)
 print(f"Wrote {n_pions} pion entries to {csv_path}")
-
-# ---------------------------------------------------------------------------
-# 2. Load SBND detector
-# ---------------------------------------------------------------------------
-print("\nLoading SBND detector model ...")
-detector_model = utilities.load_detector("SBN", detector="SBND")
 
 pion_type      = siren.dataclasses.Particle.ParticleType(PDGID_PION)
 v1_type        = siren.dataclasses.Particle.ParticleType(PDGID_V1)
@@ -242,16 +276,7 @@ injector.stopping_condition = stop
 try:
     events, gen_times = GenerateEvents(injector)
     print(f"Generated {len(events)} events in {sum(gen_times):.1f} s")
-    if events:
-        e = events[0]
-        print(f"\nFirst event:")
-        print(f"  Primary energy: {e.record.primary_momentum[0]:.4f} GeV")
-        print(f"  Vertex: ({e.record.interaction_vertex[0]:.1f}, "
-              f"{e.record.interaction_vertex[1]:.1f}, "
-              f"{e.record.interaction_vertex[2]:.1f}) cm")
-        print(f"  N secondaries: {len(e.record.secondary_momenta)}")
 except Exception as ex:
     print(f"Injection failed: {ex}")
-    print("This is expected if SIREN is not fully built with SBN GDML support.")
 finally:
     os.unlink(csv_path)
