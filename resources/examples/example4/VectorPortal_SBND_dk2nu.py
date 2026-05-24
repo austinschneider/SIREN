@@ -1,18 +1,18 @@
 """
 Vector-portal dark matter at SBND, starting from pions.
 
-Injection chain (pion-first):
-    1. Read pi+ kinematics and decay vertices from BNB dk2nu ROOT files
-    2. Inject pi+ at its decay vertex via PrimaryExternalDistribution
-    3. pi+ -> mu+ nu_mu V1   (three-body decay, Carlson-Rislow matrix element)
-    4. V1 -> chi chi'         (dark photon decay to DM pair)
-    5. chi propagates to SBND
-    6. chi + Ar -> chi' + Ar  (coherent upscattering)
-    7. chi' -> chi + V1       (de-excitation)
-    8. V1 -> e+ e-            (visible signal)
+Injection chain (pion-first, off-shell chi'):
+    1. Read pi+ from BNB dk2nu ROOT files
+    2. pi+ -> mu+ nu_mu V1            (three-body decay)
+    3. V1 -> chi chi                   (dark photon -> DM pair)
+    4. chi propagates to SBND
+    5. chi + Ar -> chi + V1 + Ar       (off-shell chi', single vertex)
+    6. V1 -> e+ e-                     (visible signal)
 
-This preserves the full pion kinematics and angular correlations from
-the beamline simulation, rather than pre-computing a chi energy spectrum.
+Biasing:
+    - Pion decay vertex from dk2nu (PrimaryExternalDistribution)
+    - chi scattering forced inside detector (SecondaryBoundedVertexDistribution)
+    - Event weight accounts for interaction probability
 
 Reference: Dutta et al., PRL 129, 111803 (2022) [arXiv:2110.11944]
 """
@@ -20,11 +20,13 @@ Reference: Dutta et al., PRL 129, 111803 (2022) [arXiv:2110.11944]
 import os
 import sys
 import glob
-
 import numpy as np
+
 import siren
 from siren import utilities
 from siren._util import GenerateEvents
+from siren.math import Vector3D
+from siren.geometry import Box
 
 # ---------------------------------------------------------------------------
 # Import model classes via SIREN's module loader
@@ -43,18 +45,16 @@ _mod_vp = _siren_util.load_module(
     "siren.resources.processes.DarkNewsTables.VectorPortal",
     os.path.join(_dt_base, "VectorPortal.py"),
 )
-_mod_xs = _siren_util.load_module(
-    "siren.resources.processes.DarkNewsTables.DarkNewsCrossSection",
-    os.path.join(_dt_base, "DarkNewsCrossSection.py"),
-)
 _mod_dk = _siren_util.load_module(
     "siren.resources.processes.DarkNewsTables.Dk2nuReader",
     os.path.join(_dt_base, "Dk2nuReader.py"),
 )
 
 MesonThreeBodySIRENDecay = _mod_mp.MesonThreeBodySIRENDecay
+BiasedMesonThreeBodyDecay = _mod_mp.BiasedMesonThreeBodyDecay
 VectorPortalOffShellXS = _mod_vp.VectorPortalOffShellXS
 DarkPhotonDecay = _mod_vp.DarkPhotonDecay
+DarkPhotonToChiDecay = _mod_vp.DarkPhotonToChiDecay
 read_dk2nu = _mod_dk.read_dk2nu
 dk2nu_to_primary_distribution = _mod_dk.dk2nu_to_primary_distribution
 print_summary = _mod_dk.print_summary
@@ -78,18 +78,18 @@ M_MUON = 0.10565837
 PDGID_PION      = 211
 PDGID_MUPLUS    = -13
 PDGID_NUMU      = 14
-PDGID_V1        = 5922
+PDGID_V1_PROD   = 5922  # V1 from pion decay (decays to chi chi)
+PDGID_V1_SIG    = 5923  # V1 from off-shell scattering (decays to e+e-)
 PDGID_CHI       = 5917
-PDGID_CHI_PRIME = 5918
 
-events_to_inject = 1000
+events_to_inject = 10000
 
 # ---------------------------------------------------------------------------
-# 1. Read dk2nu files and convert to CSV
+# 1. Read dk2nu files
 # ---------------------------------------------------------------------------
 dk2nu_dir = os.environ.get(
     "DK2NU_DIR",
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "G4BNB"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), r"../../../../G4BNB"),
 )
 dk2nu_files = sorted(glob.glob(os.path.join(dk2nu_dir, "*dk2nu*.root")))
 if not dk2nu_files:
@@ -97,32 +97,37 @@ if not dk2nu_files:
 
 if not dk2nu_files:
     print(f"No dk2nu files found in {dk2nu_dir}")
-    print("Set DK2NU_DIR environment variable or place files in sources/G4BNB/")
     sys.exit(1)
 
 print(f"Reading {len(dk2nu_files)} dk2nu file(s) ...")
 dk2nu_data = read_dk2nu(dk2nu_files, parent_pdg=[PTYPE_PIPLUS])
 print_summary(dk2nu_data)
 
+total_pot = dk2nu_data["pot"]
+print(f"Total POT: {total_pot:.3e}")
+
 # ---------------------------------------------------------------------------
-# 2. Load SBND detector (needed before CSV so we know the coordinate transform)
+# 2. Load SBND detector
 # ---------------------------------------------------------------------------
 print("\nLoading SBND detector model ...")
 detector_model = utilities.load_detector("SBN", detector="SBND")
 
-# dk2nu positions are in BNB (geometry) coordinates (cm).
-# SIREN's injector works in detector-local coordinates (m).
 pion_type = siren.dataclasses.Particle.ParticleType(PDGID_PION)
-v1_type   = siren.dataclasses.Particle.ParticleType(PDGID_V1)
+v1_prod_type = siren.dataclasses.Particle.ParticleType(PDGID_V1_PROD)
+v1_sig_type  = siren.dataclasses.Particle.ParticleType(PDGID_V1_SIG)
 chi_type  = siren.dataclasses.Particle.ParticleType(PDGID_CHI)
+
+# Fiducial volume: Box centered at detector origin
+# SBND TPC active volume is roughly 4m x 4m x 5m
+fiducial = Box(4.0, 4.0, 5.0)
 
 # ---------------------------------------------------------------------------
 # 3. Set up processes
 # ---------------------------------------------------------------------------
 print("Setting up processes ...")
 
-# Primary: pion three-body decay  pi+ -> mu+ nu_mu V1
-pion_decay = MesonThreeBodySIRENDecay(
+# Physical pion decay (for weighting)
+pion_decay_physical = MesonThreeBodySIRENDecay(
     m_meson=M_PION,
     m_lepton=M_MUON,
     m_mediator=M_V1,
@@ -131,12 +136,34 @@ pion_decay = MesonThreeBodySIRENDecay(
     pdgid_meson=PDGID_PION,
     pdgid_lepton=PDGID_MUPLUS,
     pdgid_neutrino=PDGID_NUMU,
-    pdgid_mediator=PDGID_V1,
+    pdgid_mediator=PDGID_V1_PROD,
 )
-print(f"  Pion 3-body width: {pion_decay._total_width:.4e} GeV")
+print(f"  Pion 3-body width: {pion_decay_physical._total_width:.4e} GeV")
 
-# V1 produced in pion decay -> e+e- (first V1 in chain)
-v1_to_ee_production = DarkPhotonDecay(M_V1, EPSILON_1, pdgid_V1=PDGID_V1)
+# Biased pion decay (for injection): V1 directed toward detector
+# Detector origin is at (0,0,0) in detector coordinates
+pion_decay_biased = BiasedMesonThreeBodyDecay(
+    m_meson=M_PION,
+    m_lepton=M_MUON,
+    m_mediator=M_V1,
+    g_mu=G_MU,
+    mediator_type="scalar",
+    detector_position=(0.0, 0.0, 0.0),
+    detector_radius=2.5,
+    pdgid_meson=PDGID_PION,
+    pdgid_lepton=PDGID_MUPLUS,
+    pdgid_neutrino=PDGID_NUMU,
+    pdgid_mediator=PDGID_V1_PROD,
+)
+
+# V1 from pion decay -> chi chi (DM pair production)
+# m_V1 = 17 MeV > 2 * m_chi = 16 MeV, so kinematically allowed
+v1_to_chi = DarkPhotonToChiDecay(M_V1, M_CHI, G_D, pdgid_V1=PDGID_V1_PROD, pdgid_chi=PDGID_CHI)
+print(f"  V1->chi chi width: {v1_to_chi._total_width:.4e} GeV")
+
+# V1 from off-shell scattering -> e+e- (signal)
+v1_to_ee = DarkPhotonDecay(M_V1, EPSILON_1, pdgid_V1=PDGID_V1_SIG)
+print(f"  V1->e+e- width: {v1_to_ee._total_width:.4e} GeV")
 
 # chi + Ar -> chi + V1 + Ar  (off-shell chi', single vertex)
 offshell_xs = VectorPortalOffShellXS(
@@ -146,6 +173,7 @@ offshell_xs = VectorPortalOffShellXS(
     m_V2=M_V2,
     g_D=G_D,
     epsilon=EPSILON_2,
+    pdgid_V1=PDGID_V1_SIG,
     nuclear_pdgid=1000180400,
     nuclear_mass=37.215,
     nuclear_name="Ar40",
@@ -153,51 +181,60 @@ offshell_xs = VectorPortalOffShellXS(
 )
 print(f"  chi scattering threshold: {offshell_xs._ups.Ethreshold:.4f} GeV")
 
-# V1 from the scattering vertex -> e+e-  (second V1 in chain)
-v1_to_ee_signal = DarkPhotonDecay(M_V1, EPSILON_1, pdgid_V1=PDGID_V1)
-
-# Assemble process collections
-primary_processes = {pion_type: [pion_decay]}
+primary_processes = {pion_type: [pion_decay_biased]}
 
 secondary_processes = {
-    v1_type: [v1_to_ee_production],
-    chi_type: [offshell_xs],
+    v1_prod_type: [v1_to_chi],      # production V1 -> chi chi
+    v1_sig_type: [v1_to_ee],         # signal V1 -> e+e-
+    chi_type: [offshell_xs],          # chi + Ar -> chi + V1_sig + Ar
 }
 
 # ---------------------------------------------------------------------------
 # 4. Distributions
 # ---------------------------------------------------------------------------
-primary_dist = dk2nu_to_primary_distribution(dk2nu_data, detector_model, parent_pdg=[PTYPE_PIPLUS])
+primary_dist = dk2nu_to_primary_distribution(
+    dk2nu_data, detector_model, parent_pdg=[PTYPE_PIPLUS]
+)
 print(f"  Loaded {primary_dist.GetPhysicalNumEvents()} pion events")
 
 primary_injection_distributions = [primary_dist]
-primary_physical_distributions = [primary_dist]
 
-secondary_injection_distributions = {}
-for sec_type in secondary_processes.keys():
-    secondary_injection_distributions[sec_type] = [
-        siren.distributions.SecondaryBoundedVertexDistribution()
-    ]
+# Chi scattering biased into fiducial volume
+chi_bounded = siren.distributions.SecondaryBoundedVertexDistribution(fiducial)
+
+secondary_injection_distributions = {
+    v1_prod_type: [siren.distributions.SecondaryBoundedVertexDistribution()],
+    v1_sig_type: [siren.distributions.SecondaryBoundedVertexDistribution()],
+    chi_type: [chi_bounded],
+}
 
 # ---------------------------------------------------------------------------
 # 5. Stopping condition
 # ---------------------------------------------------------------------------
 def stop(datum, i):
     secondary_type = datum.record.signature.secondary_types[i]
-    if secondary_type == siren.dataclasses.Particle.ParticleType.EMinus:
+    parent_type = datum.record.signature.primary_type
+    # Always stop: mu, nu, e (final state particles)
+    if secondary_type in [
+        siren.dataclasses.Particle.ParticleType.EMinus,
+        siren.dataclasses.Particle.ParticleType.EPlus,
+        siren.dataclasses.Particle.ParticleType.MuPlus,
+        siren.dataclasses.Particle.ParticleType.MuMinus,
+        siren.dataclasses.Particle.ParticleType(PDGID_NUMU),
+    ]:
         return True
-    if secondary_type == siren.dataclasses.Particle.ParticleType.EPlus:
+    # Stop the outgoing chi from the off-shell scattering
+    # (parent is chi_type = the scattering interaction)
+    if secondary_type == chi_type and parent_type == chi_type:
         return True
-    if secondary_type == siren.dataclasses.Particle.ParticleType.MuPlus:
-        return True
-    if secondary_type == siren.dataclasses.Particle.ParticleType.MuMinus:
-        return True
-    if secondary_type == siren.dataclasses.Particle.ParticleType(PDGID_NUMU):
-        return True
+    # Stop the recoiling nucleus from off-shell scattering
+    if secondary_type not in [chi_type, v1_prod_type, v1_sig_type]:
+        if parent_type == chi_type:
+            return True
     return False
 
 # ---------------------------------------------------------------------------
-# 6. Run
+# 6. Run injection
 # ---------------------------------------------------------------------------
 print(f"\nInjecting {events_to_inject} events ...")
 
@@ -212,4 +249,41 @@ injector.secondary_injection_distributions = secondary_injection_distributions
 injector.stopping_condition = stop
 
 events, gen_times = GenerateEvents(injector)
-print(f"Generated {len(events)} events in {sum(gen_times):.1f} s")
+
+n_total = len(events)
+n_nonempty = sum(1 for e in events if len(e.tree) > 1)
+total_time = sum(gen_times)
+
+print(f"\nGenerated {n_total} events in {total_time:.1f} s")
+print(f"  Non-trivial trees (>1 node): {n_nonempty}")
+print(f"  Injection rate: {n_total / total_time:.0f} events/s")
+
+# ---------------------------------------------------------------------------
+# 7. Compute injection efficiency
+# ---------------------------------------------------------------------------
+print("\n--- Injection Efficiency ---")
+print(f"Total pion decays sampled: {events_to_inject}")
+print(f"Total events with interaction tree: {n_total}")
+
+# Count how many events have a chi scattering vertex
+n_chi_scatter = 0
+n_v1_decay = 0
+for event in events:
+    for datum in event.tree:
+        rec = datum.record
+        primary_pdg = int(rec.signature.primary_type)
+        if primary_pdg == PDGID_CHI:
+            n_chi_scatter += 1
+        if primary_pdg == PDGID_V1_SIG:
+            n_v1_decay += 1
+
+print(f"Events with chi scattering: {n_chi_scatter}")
+print(f"Events with V1->ee signal: {n_v1_decay}")
+print(f"Injection efficiency (chi scatter / injected): {n_chi_scatter / events_to_inject:.2e}")
+
+if total_pot > 0:
+    n_pions_in_file = len(dk2nu_data["E"])
+    pot_per_event = total_pot / n_pions_in_file
+    print(f"\n--- POT Scaling ---")
+    print(f"POT per dk2nu pion: {pot_per_event:.3e}")
+    print(f"POT sampled: {events_to_inject * pot_per_event:.3e}")

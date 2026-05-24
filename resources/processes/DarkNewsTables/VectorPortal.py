@@ -63,31 +63,32 @@ class _Stub:
 # ---------------------------------------------------------------------------
 
 def _Q2max(E, m_ups, M):
-    s = 2.0 * E * M + M**2
-    kallen_arg = M**4 + (m_ups**2 - s)**2 - 2.0 * M**2 * (m_ups**2 + s)
-    kallen_sqrt = math.sqrt(max(kallen_arg, 0.0))
-    return 0.5 / s * (
-        M**4 - m_ups**2 * s + s**2
-        - M**2 * (m_ups**2 + 2.0 * s)
-        + (-M**2 + s) * kallen_sqrt
-    )
+    """Maximum Q2 for 2->2 scattering m1 + M -> m3 + M at lab energy E.
+    Q2 = -(p1 - p3)^2 = 2*p1cm*p3cm*(1 + cos_theta_cm) at backward scattering."""
+    m1 = 0.0  # approximation: m_chi << everything else
+    s = m1**2 + M**2 + 2.0 * M * E
+    if s <= (m_ups + M)**2:
+        return 0.0
+    E1cm = (s + m1**2 - M**2) / (2.0 * math.sqrt(s))
+    E3cm = (s + m_ups**2 - M**2) / (2.0 * math.sqrt(s))
+    p1cm = math.sqrt(max(E1cm**2 - m1**2, 0.0))
+    p3cm = math.sqrt(max(E3cm**2 - m_ups**2, 0.0))
+    t_min = m1**2 + m_ups**2 - 2.0 * E1cm * E3cm - 2.0 * p1cm * p3cm
+    return -t_min
 
 
 def _Q2min(E, m_ups, M):
-    s = 2.0 * E * M + M**2
-    r = m_ups / math.sqrt(s) if s > 0 else 0.0
-    m = M / math.sqrt(s) if s > 0 else 0.0
-
-    if r < 1e-3:
-        return m**2 / (1.0 - m**2)**2 * r**4 * s if (1.0 - m**2) != 0 else 0.0
-
-    kallen_arg = (1.0 - m**2)**2 - 2.0 * (1.0 + m**2) * r**2 + r**4
-    kallen_sqrt = math.sqrt(max(kallen_arg, 0.0))
-
-    return 0.5 * s * (
-        1.0 + m**2 - r**2 - kallen_sqrt
-        + m**2 * (-2.0 - r**2 + kallen_sqrt)
-    )
+    """Minimum Q2 (forward scattering)."""
+    m1 = 0.0
+    s = m1**2 + M**2 + 2.0 * M * E
+    if s <= (m_ups + M)**2:
+        return 0.0
+    E1cm = (s + m1**2 - M**2) / (2.0 * math.sqrt(s))
+    E3cm = (s + m_ups**2 - M**2) / (2.0 * math.sqrt(s))
+    p1cm = math.sqrt(max(E1cm**2 - m1**2, 0.0))
+    p3cm = math.sqrt(max(E3cm**2 - m_ups**2, 0.0))
+    t_max = m1**2 + m_ups**2 - 2.0 * E1cm * E3cm + 2.0 * p1cm * p3cm
+    return -t_max
 
 
 def _two_body_p_cm(M, m1, m2):
@@ -655,6 +656,113 @@ class DarkPhotonDecay(DarkNewsDecay):
             elif sec.type == Particle.ParticleType.EPlus:
                 sec.four_momentum = P_eplus
                 sec.mass = me
+        return record
+
+
+# ===================================================================
+#  DarkPhotonToChiDecay  --  V1 -> chi chi_bar
+# ===================================================================
+
+class DarkPhotonToChiDecay(DarkNewsDecay):
+    """
+    Two-body decay V1 -> chi chi_bar (dark matter pair production).
+
+    Width: Gamma = (g_D^2 m_V / 12 pi) * beta^3
+    where beta = sqrt(1 - 4 m_chi^2 / m_V^2).
+
+    This is the dominant V1 decay when kinematically allowed
+    (m_V > 2 m_chi).  The chi and chi_bar are both assigned
+    the same PDG ID (chi) — the injector treats them identically
+    and the stopping condition prevents re-scattering.
+    """
+
+    def __init__(
+        self,
+        m_V1,
+        m_chi,
+        g_D,
+        *,
+        pdgid_V1=5922,
+        pdgid_chi=5917,
+        table_dir=None,
+    ):
+        DarkNewsDecay.__init__(self)
+        self.m_V1 = m_V1
+        self.m_chi = m_chi
+        self.g_D = g_D
+        self.pdgid_V1 = pdgid_V1
+        self.pdgid_chi = pdgid_chi
+
+        self.table_dir = table_dir or "."
+        os.makedirs(self.table_dir, exist_ok=True)
+        self._total_width = self._compute_width()
+
+    def _compute_width(self):
+        mV = self.m_V1
+        mc = self.m_chi
+        if mV < 2.0 * mc:
+            return 0.0
+        beta = math.sqrt(max(1.0 - (2.0 * mc / mV)**2, 0.0))
+        return self.g_D**2 * mV / (12.0 * math.pi) * beta**3
+
+    def GetPossibleSignatures(self):
+        sig = dataclasses.InteractionSignature()
+        sig.primary_type = Particle.ParticleType(self.pdgid_V1)
+        sig.target_type = Particle.ParticleType.Decay
+        sig.secondary_types = [
+            Particle.ParticleType(self.pdgid_chi),
+            Particle.ParticleType(self.pdgid_chi),
+        ]
+        return [sig]
+
+    def GetPossibleSignaturesFromParent(self, primary_type):
+        if int(primary_type) == self.pdgid_V1:
+            return self.GetPossibleSignatures()
+        return []
+
+    def TotalDecayWidth(self, arg1):
+        if isinstance(arg1, dataclasses.InteractionRecord):
+            primary = arg1.signature.primary_type
+        else:
+            primary = arg1
+        if int(primary) != self.pdgid_V1:
+            return 0.0
+        return self._total_width
+
+    def TotalDecayWidthForFinalState(self, record):
+        if int(record.signature.primary_type) != self.pdgid_V1:
+            return 0.0
+        return self._total_width
+
+    def DifferentialDecayWidth(self, record):
+        if int(record.signature.primary_type) != self.pdgid_V1:
+            return 0.0
+        return self._total_width / (4.0 * math.pi)
+
+    def FinalStateProbability(self, record):
+        return 1.0
+
+    def DensityVariables(self):
+        return ["cos_theta"]
+
+    def save_to_table(self, table_subdir=None):
+        pass
+
+    def SampleFinalState(self, record, random):
+        p_cm = _two_body_p_cm(self.m_V1, self.m_chi, self.m_chi)
+
+        cos_theta = random.Uniform(-1.0, 1.0)
+        phi = random.Uniform(0.0, 2.0 * math.pi)
+
+        P_parent = np.array(record.primary_momentum)
+        P_chi1 = _boost_to_lab(P_parent, p_cm, cos_theta, phi, self.m_chi)
+        P_chi2 = _boost_to_lab(P_parent, p_cm, -cos_theta, phi + math.pi, self.m_chi)
+
+        secondaries = record.get_secondary_particle_records()
+        secondaries[0].four_momentum = P_chi1
+        secondaries[0].mass = self.m_chi
+        secondaries[1].four_momentum = P_chi2
+        secondaries[1].mass = self.m_chi
         return record
 
 

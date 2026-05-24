@@ -176,15 +176,17 @@ def read_dk2nu(
         all_data["nimpwt"].append(nimpwt)
         all_data["ntype"].append(ntype)
 
+        # uproot method to get total POT from dkmetaTree (if available)
         if "dkmetaTree" in f:
-            meta = f["dkmetaTree"]
-            meta_keys = set(meta.keys())
-            if "pots" in meta_keys:
-                pot_arr = meta.arrays(["pots"], library="np")["pots"]
-                total_pot += float(np.sum(pot_arr))
-            elif "dk2nu/pots" in meta_keys:
-                pot_arr = meta.arrays(["dk2nu/pots"], library="np")["dk2nu/pots"]
-                total_pot += float(np.sum(pot_arr))
+            meta_tree = f["dkmetaTree"]
+            print(list(meta_tree.keys()))
+            if "dkmeta/pots" in meta_tree.keys():
+                pots = meta_tree["dkmeta/pots"].array(library="np")
+                if len(pots) > 0:
+                    pots = pots[0]
+                else:
+                    pots = 0.0
+                total_pot += pots
 
     result = {k: np.concatenate(v) for k, v in all_data.items()}
     result["pot"] = total_pot
