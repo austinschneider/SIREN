@@ -279,6 +279,77 @@ def dk2nu_to_tabulated_flux(
     )
 
 
+def dk2nu_to_primary_distribution(
+    dk2nu_data,
+    detector_model,
+    parent_pdg=None,
+):
+    """
+    Build a PrimaryExternalDistribution directly from dk2nu data.
+
+    Converts positions from BNB (geometry) coordinates to detector-local
+    coordinates using the detector model's ToDet transform, and from cm
+    to meters.  No intermediate CSV file is needed.
+
+    Parameters
+    ----------
+    dk2nu_data : dict
+        Output of read_dk2nu().
+    detector_model : siren.detector.DetectorModel
+        Detector model (provides the geometry-to-detector transform).
+    parent_pdg : int or list of int, optional
+        Filter to specific parent PDG code(s).
+
+    Returns
+    -------
+    siren.distributions.PrimaryExternalDistribution
+    """
+    import siren
+    from siren.detector import GeometryPosition
+    from siren.math import Vector3D
+
+    ptype = dk2nu_data["ptype"]
+    if parent_pdg is not None:
+        if not hasattr(parent_pdg, "__iter__"):
+            parent_pdg = [parent_pdg]
+        mask = np.isin(ptype, parent_pdg)
+    else:
+        mask = np.ones(len(ptype), dtype=bool)
+
+    E = dk2nu_data["E"][mask]
+    px = dk2nu_data["px"][mask]
+    py = dk2nu_data["py"][mask]
+    pz = dk2nu_data["pz"][mask]
+    vx = dk2nu_data["vx"][mask]
+    vy = dk2nu_data["vy"][mask]
+    vz = dk2nu_data["vz"][mask]
+    nimpwt = dk2nu_data["nimpwt"][mask]
+    pt = ptype[mask]
+
+    mass_map = {
+        211: 0.13957039, -211: 0.13957039,
+        321: 0.49368,    -321: 0.49368,
+        130: 0.49761,
+        13: 0.10566,     -13: 0.10566,
+    }
+
+    keys = ["E", "px", "py", "pz", "x0", "y0", "z0", "m", "nimpwt"]
+    data = []
+    for i in range(len(E)):
+        geo_pos = GeometryPosition(Vector3D(
+            vx[i] * 0.01, vy[i] * 0.01, vz[i] * 0.01
+        ))
+        det_pos = detector_model.GeoPositionToDetPosition(geo_pos).get()
+        m = mass_map.get(int(pt[i]), 0.13957)
+        data.append([
+            float(E[i]), float(px[i]), float(py[i]), float(pz[i]),
+            det_pos.GetX(), det_pos.GetY(), det_pos.GetZ(),
+            m, float(nimpwt[i]),
+        ])
+
+    return siren.distributions.PrimaryExternalDistribution(keys, data)
+
+
 def dk2nu_to_csv(
     dk2nu_data,
     output_path,

@@ -74,6 +74,8 @@ PYBIND11_MODULE(distributions,m) {
   class_<PrimaryExternalDistribution, std::shared_ptr<PrimaryExternalDistribution>, PrimaryInjectionDistribution>(m,"PrimaryExternalDistribution")
     .def(init<std::string>())
     .def(init<std::string, double>())
+    .def(init<std::vector<std::string>, std::vector<std::vector<double>>>())
+    .def(init<std::vector<std::string>, std::vector<std::vector<double>>, double>())
     .def("Sample",&PrimaryExternalDistribution::Sample)
     .def("GetPhysicalNumEvents",&PrimaryExternalDistribution::GetPhysicalNumEvents)
     .def("DensityVariables",&PrimaryExternalDistribution::DensityVariables)

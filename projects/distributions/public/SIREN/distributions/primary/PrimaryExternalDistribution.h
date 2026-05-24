@@ -45,6 +45,8 @@ private:
 public:
     PrimaryExternalDistribution(std::string _filename);
     PrimaryExternalDistribution(std::string _filename, double emin);
+    PrimaryExternalDistribution(std::vector<std::string> _keys, std::vector<std::vector<double>> _data);
+    PrimaryExternalDistribution(std::vector<std::string> _keys, std::vector<std::vector<double>> _data, double emin);
     PrimaryExternalDistribution(PrimaryExternalDistribution const & other) = default;
     size_t GetPhysicalNumEvents() const;
     void Sample(std::shared_ptr<siren::utilities::SIREN_random> rand, std::shared_ptr<siren::detector::DetectorModel const> detector_model, std::shared_ptr<siren::interactions::InteractionCollection const> interactions, siren::dataclasses::PrimaryDistributionRecord & record) const override;

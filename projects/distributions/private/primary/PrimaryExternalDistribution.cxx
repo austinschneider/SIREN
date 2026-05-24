@@ -113,6 +113,49 @@ PrimaryExternalDistribution::PrimaryExternalDistribution(std::string _filename, 
     LoadInputFile(_filename);
 }
 
+PrimaryExternalDistribution::PrimaryExternalDistribution(std::vector<std::string> _keys, std::vector<std::vector<double>> _data)
+    : emin(0)
+{
+    keys = std::move(_keys);
+    input_data = std::move(_data);
+    filename = "<in-memory>";
+    for (auto const & k : keys) {
+        if (k == "x0") init_pos_set = true;
+        else if (k == "y0") init_pos_set = init_pos_set;
+        else if (k == "z0") init_pos_set = init_pos_set;
+        else if (k == "x") vertex_set = true;
+        else if (k == "y") vertex_set = vertex_set;
+        else if (k == "z") vertex_set = vertex_set;
+        else if (k == "px") mom_set = true;
+        else if (k == "py") mom_set = mom_set;
+        else if (k == "pz") mom_set = mom_set;
+    }
+    // Require all three components for each flag
+    bool has_x0 = false, has_y0 = false, has_z0 = false;
+    bool has_x = false, has_y = false, has_z = false;
+    bool has_px = false, has_py = false, has_pz = false;
+    for (auto const & k : keys) {
+        if (k == "x0") has_x0 = true;
+        else if (k == "y0") has_y0 = true;
+        else if (k == "z0") has_z0 = true;
+        else if (k == "x") has_x = true;
+        else if (k == "y") has_y = true;
+        else if (k == "z") has_z = true;
+        else if (k == "px") has_px = true;
+        else if (k == "py") has_py = true;
+        else if (k == "pz") has_pz = true;
+    }
+    init_pos_set = has_x0 && has_y0 && has_z0;
+    vertex_set = has_x && has_y && has_z;
+    mom_set = has_px && has_py && has_pz;
+}
+
+PrimaryExternalDistribution::PrimaryExternalDistribution(std::vector<std::string> _keys, std::vector<std::vector<double>> _data, double emin)
+    : PrimaryExternalDistribution(std::move(_keys), std::move(_data))
+{
+    this->emin = emin;
+}
+
 // Accounts for events above threshold only!
 size_t PrimaryExternalDistribution::GetPhysicalNumEvents() const
 {
