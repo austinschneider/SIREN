@@ -767,6 +767,146 @@ class DarkPhotonToChiDecay(DarkNewsDecay):
 
 
 # ===================================================================
+#  BiasedDarkPhotonToChiDecay  --  V1 -> chi chi_bar (cone-biased)
+# ===================================================================
+
+class BiasedDarkPhotonToChiDecay(DarkNewsDecay):
+    """
+    Biased V1 -> chi chi_bar decay.
+
+    One chi is sampled toward a target position (detector center) via
+    a cone.  The other chi goes in the opposite direction in the rest
+    frame.  FinalStateProbability returns the cone density so the
+    Weighter can correct via importance sampling.
+    """
+
+    def __init__(
+        self,
+        m_V1,
+        m_chi,
+        g_D,
+        *,
+        detector_position=(0.0, 0.0, 0.0),
+        cone_half_angle=None,
+        detector_radius=2.0,
+        pdgid_V1=5922,
+        pdgid_chi=5917,
+        table_dir=None,
+    ):
+        DarkNewsDecay.__init__(self)
+        self.m_V1 = m_V1
+        self.m_chi = m_chi
+        self.g_D = g_D
+        self.pdgid_V1 = pdgid_V1
+        self.pdgid_chi = pdgid_chi
+
+        self.detector_position = np.array(detector_position, dtype=float)
+        self.cone_half_angle = cone_half_angle
+        self.detector_radius = detector_radius
+
+        self.table_dir = table_dir or "."
+        os.makedirs(self.table_dir, exist_ok=True)
+
+        mV, mc = m_V1, m_chi
+        if mV < 2.0 * mc:
+            self._total_width = 0.0
+        else:
+            beta = math.sqrt(max(1.0 - (2.0 * mc / mV)**2, 0.0))
+            self._total_width = g_D**2 * mV / (12.0 * math.pi) * beta**3
+
+    def _get_cone_params(self, decay_vertex):
+        delta = self.detector_position - np.array(decay_vertex)
+        dist = np.linalg.norm(delta)
+        if dist < 1e-6:
+            return np.array([0, 0, 1.0]), math.pi
+        axis = delta / dist
+        if self.cone_half_angle is not None:
+            half_angle = self.cone_half_angle
+        else:
+            half_angle = math.atan2(self.detector_radius, dist)
+        return axis, half_angle
+
+    def GetPossibleSignatures(self):
+        sig = dataclasses.InteractionSignature()
+        sig.primary_type = Particle.ParticleType(self.pdgid_V1)
+        sig.target_type = Particle.ParticleType.Decay
+        sig.secondary_types = [
+            Particle.ParticleType(self.pdgid_chi),
+            Particle.ParticleType(self.pdgid_chi),
+        ]
+        return [sig]
+
+    def GetPossibleSignaturesFromParent(self, primary_type):
+        if int(primary_type) == self.pdgid_V1:
+            return self.GetPossibleSignatures()
+        return []
+
+    def TotalDecayWidth(self, arg1):
+        if isinstance(arg1, dataclasses.InteractionRecord):
+            primary = arg1.signature.primary_type
+        else:
+            primary = arg1
+        if int(primary) != self.pdgid_V1:
+            return 0.0
+        return self._total_width
+
+    def TotalDecayWidthForFinalState(self, record):
+        if int(record.signature.primary_type) != self.pdgid_V1:
+            return 0.0
+        return self._total_width
+
+    def DifferentialDecayWidth(self, record):
+        if int(record.signature.primary_type) != self.pdgid_V1:
+            return 0.0
+        return self._total_width / (4.0 * math.pi)
+
+    def FinalStateProbability(self, record):
+        """Biased density: isotropic in energy, cone in direction -> 1/Omega_cone."""
+        _, half_angle = self._get_cone_params(record.interaction_vertex)
+        omega = 2.0 * math.pi * (1.0 - math.cos(half_angle))
+        return 1.0 / omega if omega > 0 else 0.0
+
+    def DensityVariables(self):
+        return ["cos_theta_chi"]
+
+    def save_to_table(self, table_subdir=None):
+        pass
+
+    def SampleFinalState(self, record, random):
+        p_cm = _two_body_p_cm(self.m_V1, self.m_chi, self.m_chi)
+        P_parent = np.array(record.primary_momentum)
+        decay_vertex = np.array(record.interaction_vertex)
+
+        cone_axis, half_angle = self._get_cone_params(decay_vertex)
+
+        cos_cone = random.Uniform(math.cos(half_angle), 1.0)
+        phi_cone = random.Uniform(0.0, 2.0 * math.pi)
+        sin_cone = math.sqrt(max(1.0 - cos_cone**2, 0.0))
+
+        arb = np.array([0, 1, 0]) if abs(cone_axis[1]) < 0.9 else np.array([1, 0, 0])
+        perp1 = np.cross(cone_axis, arb)
+        perp1 /= np.linalg.norm(perp1)
+        perp2 = np.cross(cone_axis, perp1)
+
+        chi_dir_lab = (cos_cone * cone_axis
+                       + sin_cone * math.cos(phi_cone) * perp1
+                       + sin_cone * math.sin(phi_cone) * perp2)
+
+        cos_theta = float(chi_dir_lab[2])
+        phi = math.atan2(float(chi_dir_lab[1]), float(chi_dir_lab[0]))
+
+        P_chi1 = _boost_to_lab(P_parent, p_cm, cos_theta, phi, self.m_chi)
+        P_chi2 = _boost_to_lab(P_parent, p_cm, -cos_theta, phi + math.pi, self.m_chi)
+
+        secondaries = record.get_secondary_particle_records()
+        secondaries[0].four_momentum = P_chi1
+        secondaries[0].mass = self.m_chi
+        secondaries[1].four_momentum = P_chi2
+        secondaries[1].mass = self.m_chi
+        return record
+
+
+# ===================================================================
 #  Flux construction
 # ===================================================================
 

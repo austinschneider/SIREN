@@ -54,7 +54,7 @@ MesonThreeBodySIRENDecay = _mod_mp.MesonThreeBodySIRENDecay
 BiasedMesonThreeBodyDecay = _mod_mp.BiasedMesonThreeBodyDecay
 VectorPortalOffShellXS = _mod_vp.VectorPortalOffShellXS
 DarkPhotonDecay = _mod_vp.DarkPhotonDecay
-DarkPhotonToChiDecay = _mod_vp.DarkPhotonToChiDecay
+BiasedDarkPhotonToChiDecay = _mod_vp.BiasedDarkPhotonToChiDecay
 read_dk2nu = _mod_dk.read_dk2nu
 dk2nu_to_primary_distribution = _mod_dk.dk2nu_to_primary_distribution
 print_summary = _mod_dk.print_summary
@@ -156,9 +156,14 @@ pion_decay_biased = BiasedMesonThreeBodyDecay(
     pdgid_mediator=PDGID_V1_PROD,
 )
 
-# V1 from pion decay -> chi chi (DM pair production)
-# m_V1 = 17 MeV > 2 * m_chi = 16 MeV, so kinematically allowed
-v1_to_chi = DarkPhotonToChiDecay(M_V1, M_CHI, G_D, pdgid_V1=PDGID_V1_PROD, pdgid_chi=PDGID_CHI)
+# V1 from pion decay -> chi chi (biased toward detector)
+v1_to_chi = BiasedDarkPhotonToChiDecay(
+    M_V1, M_CHI, G_D,
+    detector_position=(0.0, 0.0, 0.0),
+    detector_radius=2.5,
+    pdgid_V1=PDGID_V1_PROD,
+    pdgid_chi=PDGID_CHI,
+)
 print(f"  V1->chi chi width: {v1_to_chi._total_width:.4e} GeV")
 
 # V1 from off-shell scattering -> e+e- (signal)
