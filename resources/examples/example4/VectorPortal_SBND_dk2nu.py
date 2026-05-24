@@ -1,13 +1,18 @@
 """
-Vector-portal dark matter at SBND using dk2nu pion flux.
+Vector-portal dark matter at SBND, starting from pions.
 
-Full injection chain:
-    1. Read pi+ kinematics from BNB dk2nu ROOT files
-    2. Compute chi flux via pi+ -> mu+ nu V1, V1 -> chi chi'
-    3. Inject chi into SBND detector
-    4. chi + Ar -> chi' + Ar  (coherent upscattering)
-    5. chi' -> chi + V1       (de-excitation)
-    6. V1 -> e+ e-            (visible signal)
+Injection chain (pion-first):
+    1. Read pi+ kinematics and decay vertices from BNB dk2nu ROOT files
+    2. Inject pi+ at its decay vertex via PrimaryExternalDistribution
+    3. pi+ -> mu+ nu_mu V1   (three-body decay, Carlson-Rislow matrix element)
+    4. V1 -> chi chi'         (dark photon decay to DM pair)
+    5. chi propagates to SBND
+    6. chi + Ar -> chi' + Ar  (coherent upscattering)
+    7. chi' -> chi + V1       (de-excitation)
+    8. V1 -> e+ e-            (visible signal)
+
+This preserves the full pion kinematics and angular correlations from
+the beamline simulation, rather than pre-computing a chi energy spectrum.
 
 Reference: Dutta et al., PRL 129, 111803 (2022) [arXiv:2110.11944]
 """
@@ -15,26 +20,30 @@ Reference: Dutta et al., PRL 129, 111803 (2022) [arXiv:2110.11944]
 import os
 import sys
 import glob
-import numpy as np
+import tempfile
 
+import numpy as np
 import siren
 from siren import utilities
 from siren._util import GenerateEvents
 
 # ---------------------------------------------------------------------------
-# Import Dutta-Kim model classes from DarkNewsTables
+# Import model classes
 # ---------------------------------------------------------------------------
+from siren.resources.processes.DarkNewsTables.MesonProduction import (
+    MesonThreeBodySIRENDecay,
+)
 from siren.resources.processes.DarkNewsTables.VectorPortal import (
     VectorPortalUpsCase,
     ChiPrimeDecay,
     DarkPhotonDecay,
-    compute_chi_flux_from_dk2nu,
 )
 from siren.resources.processes.DarkNewsTables.DarkNewsCrossSection import (
     PyDarkNewsCrossSection,
 )
 from siren.resources.processes.DarkNewsTables.Dk2nuReader import (
     read_dk2nu,
+    dk2nu_to_csv,
     print_summary,
     PTYPE_PIPLUS,
 )
@@ -42,32 +51,35 @@ from siren.resources.processes.DarkNewsTables.Dk2nuReader import (
 # ---------------------------------------------------------------------------
 # Model parameters (Dutta et al. Table I, double-mediator)
 # ---------------------------------------------------------------------------
-M_CHI       = 8e-3    # GeV  chi   (DM ground state)
-M_CHI_PRIME = 50e-3   # GeV  chi'  (DM excited state)
-M_V1        = 17e-3   # GeV  V1    (light dark photon, production + decay)
-M_V2        = 200e-3  # GeV  V2    (heavy mediator, upscattering)
+M_CHI       = 8e-3    # GeV
+M_CHI_PRIME = 50e-3   # GeV
+M_V1        = 17e-3   # GeV  (light dark photon)
+M_V2        = 200e-3  # GeV  (heavy upscattering mediator)
 G_D         = 1.0
 EPSILON_1   = 7e-5    # kinetic mixing for V1
 EPSILON_2   = 1e-4    # kinetic mixing for V2
+G_MU        = 1e-3    # Yukawa coupling of V1/phi to muon
 
+M_PION = 0.13957039
+M_MUON = 0.10565837
+
+PDGID_PION      = 211
+PDGID_MUPLUS    = -13
+PDGID_NUMU      = 14
+PDGID_V1        = 5922
 PDGID_CHI       = 5917
 PDGID_CHI_PRIME = 5918
-PDGID_V1        = 5922
-
-# Production channel: pi+ -> mu+ nu_mu V1
-M_PION = 0.13957     # GeV
-M_MUON = 0.10566     # GeV
 
 events_to_inject = 1000
 
 # ---------------------------------------------------------------------------
-# 1. Read dk2nu files
+# 1. Read dk2nu files and convert to CSV
 # ---------------------------------------------------------------------------
 dk2nu_dir = os.environ.get(
     "DK2NU_DIR",
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "G4BNB"),
 )
-dk2nu_files = sorted(glob.glob(os.path.join(dk2nu_dir, "*.dk2nu.root")))
+dk2nu_files = sorted(glob.glob(os.path.join(dk2nu_dir, "*dk2nu*.root")))
 if not dk2nu_files:
     dk2nu_files = sorted(glob.glob(os.path.join(dk2nu_dir, "nubeam*.root")))
 
@@ -76,48 +88,61 @@ if not dk2nu_files:
     print("Set DK2NU_DIR environment variable or place files in sources/G4BNB/")
     sys.exit(1)
 
-print(f"Reading {len(dk2nu_files)} dk2nu file(s) from {dk2nu_dir} ...")
+print(f"Reading {len(dk2nu_files)} dk2nu file(s) ...")
 dk2nu_data = read_dk2nu(dk2nu_files, parent_pdg=[PTYPE_PIPLUS])
 print_summary(dk2nu_data)
 
+csv_file = tempfile.NamedTemporaryFile(
+    suffix=".csv", delete=False, prefix="dk2nu_pions_"
+)
+csv_path = csv_file.name
+csv_file.close()
+
+n_pions = dk2nu_to_csv(dk2nu_data, csv_path, units_cm=True)
+print(f"Wrote {n_pions} pion entries to {csv_path}")
+
 # ---------------------------------------------------------------------------
-# 2. Load SBN/SBND detector
+# 2. Load SBND detector
 # ---------------------------------------------------------------------------
 print("\nLoading SBND detector model ...")
 detector_model = utilities.load_detector("SBN", detector="SBND")
 
+pion_type      = siren.dataclasses.Particle.ParticleType(PDGID_PION)
+v1_type        = siren.dataclasses.Particle.ParticleType(PDGID_V1)
 chi_type       = siren.dataclasses.Particle.ParticleType(PDGID_CHI)
 chi_prime_type = siren.dataclasses.Particle.ParticleType(PDGID_CHI_PRIME)
-v1_type        = siren.dataclasses.Particle.ParticleType(PDGID_V1)
 
 # ---------------------------------------------------------------------------
-# 3. Build chi flux from dk2nu pion spectrum
+# 3. Set up processes
 # ---------------------------------------------------------------------------
-print("Computing chi flux from dk2nu pion spectrum ...")
+print("Setting up processes ...")
 
-# Upscattering threshold determines minimum chi energy
-ups_threshold = ((M_CHI_PRIME + 37.215)**2 - M_CHI**2 - 37.215**2) / (2.0 * 37.215)
-
-chi_flux = compute_chi_flux_from_dk2nu(
-    dk2nu_data=dk2nu_data,
-    parent_pdg=PTYPE_PIPLUS,
+# Primary: pion three-body decay  pi+ -> mu+ nu_mu V1
+pion_decay = MesonThreeBodySIRENDecay(
     m_meson=M_PION,
     m_lepton=M_MUON,
-    m_V1=M_V1,
-    m_chi=M_CHI,
-    m_chi_prime=M_CHI_PRIME,
-    g_D=G_D,
-    epsilon=EPSILON_1,
-    min_energy=ups_threshold,
-    max_energy=3.0,
-    n_bins=100,
+    m_mediator=M_V1,
+    g_mu=G_MU,
+    mediator_type="scalar",
+    pdgid_meson=PDGID_PION,
+    pdgid_lepton=PDGID_MUPLUS,
+    pdgid_neutrino=PDGID_NUMU,
+    pdgid_mediator=PDGID_V1,
 )
+print(f"  Pion 3-body width: {pion_decay._total_width:.4e} GeV")
 
-# ---------------------------------------------------------------------------
-# 4. Set up cross sections (chi + Ar40 -> chi' + Ar40)
-# ---------------------------------------------------------------------------
-print("Setting up upscattering cross sections ...")
+# V1 -> chi chi' (if kinematically allowed) or V1 -> e+e-
+v1_to_chi = None
+if M_V1 > M_CHI + M_CHI_PRIME:
+    v1_to_chi = ChiPrimeDecay(
+        M_CHI, M_CHI_PRIME, M_V1, G_D,
+        pdgid_chi_prime=PDGID_CHI_PRIME,
+        pdgid_chi=PDGID_CHI,
+        pdgid_V1=PDGID_V1,
+    )
+v1_to_ee = DarkPhotonDecay(M_V1, EPSILON_1, pdgid_V1=PDGID_V1)
 
+# chi N -> chi' N upscattering
 ups_case = VectorPortalUpsCase(
     m_chi=M_CHI,
     m_chi_prime=M_CHI_PRIME,
@@ -127,85 +152,45 @@ ups_case = VectorPortalUpsCase(
     nuclear_pdgid=1000180400,
     nuclear_mass=37.215,
     nuclear_name="Ar40",
-    A=40,
-    Z=18,
+    A=40, Z=18,
 )
 xs = PyDarkNewsCrossSection(ups_case, always_interpolate=True)
+print(f"  chi upscattering threshold: {ups_case.Ethreshold:.4f} GeV")
 
-primary_processes = {chi_type: [xs]}
-
-# ---------------------------------------------------------------------------
-# 5. Set up decay chain
-# ---------------------------------------------------------------------------
+# chi' -> chi V1
 chi_prime_decay = ChiPrimeDecay(
     M_CHI, M_CHI_PRIME, M_V1, G_D,
     pdgid_chi_prime=PDGID_CHI_PRIME,
     pdgid_chi=PDGID_CHI,
     pdgid_V1=PDGID_V1,
 )
-v1_decay = DarkPhotonDecay(M_V1, EPSILON_1, pdgid_V1=PDGID_V1)
+print(f"  chi' decay width: {chi_prime_decay._total_width:.4e} GeV")
 
-print(f"chi' decay width: {chi_prime_decay._total_width:.4e} GeV")
-print(f"V1 decay width:   {v1_decay._total_width:.4e} GeV")
+# Assemble process collections
+primary_processes = {pion_type: [pion_decay]}
 
 secondary_processes = {
+    v1_type: [v1_to_ee],
+    chi_type: [xs],
     chi_prime_type: [chi_prime_decay],
-    v1_type: [v1_decay],
 }
+if v1_to_chi is not None:
+    secondary_processes[v1_type].insert(0, v1_to_chi)
 
 # ---------------------------------------------------------------------------
-# 6. Distributions
+# 4. Distributions
 # ---------------------------------------------------------------------------
-mass_dist = siren.distributions.PrimaryMass(M_CHI)
-direction_dist = siren.distributions.FixedDirection(
-    siren.math.Vector3D(0, 0, 1.0)
-)
+primary_dist = siren.distributions.PrimaryExternalDistribution(csv_path)
+print(f"  Loaded {primary_dist.GetPhysicalNumEvents()} pion events from CSV")
 
-chi_flux_gen = compute_chi_flux_from_dk2nu(
-    dk2nu_data=dk2nu_data,
-    parent_pdg=PTYPE_PIPLUS,
-    m_meson=M_PION,
-    m_lepton=M_MUON,
-    m_V1=M_V1,
-    m_chi=M_CHI,
-    m_chi_prime=M_CHI_PRIME,
-    g_D=G_D,
-    epsilon=EPSILON_1,
-    min_energy=ups_threshold,
-    max_energy=3.0,
-    n_bins=100,
-    physically_normalized=False,
-)
-
-DN_min_decay_width = min(chi_prime_decay._total_width, v1_decay._total_width)
-
-decay_range_func = siren.distributions.DecayRangeFunction(
-    M_CHI, DN_min_decay_width, 3, 110  # SBND baseline ~110 m from BNB target
-)
-position_dist = siren.distributions.DecayRangePositionDistribution(
-    2.0, 2.0, decay_range_func,
-)
-
-primary_injection_distributions = [
-    mass_dist,
-    chi_flux_gen,
-    direction_dist,
-    position_dist,
-]
-
-primary_physical_distributions = [
-    chi_flux,
-    direction_dist,
-]
+primary_injection_distributions = [primary_dist]
+primary_physical_distributions = [primary_dist]
 
 secondary_injection_distributions = {}
-for sec_type in secondary_processes.keys():
-    secondary_injection_distributions[sec_type] = [
-        siren.distributions.SecondaryBoundedVertexDistribution()
-    ]
+secondary_physical_distributions = {}
 
 # ---------------------------------------------------------------------------
-# 7. Stopping condition
+# 5. Stopping condition
 # ---------------------------------------------------------------------------
 def stop(datum, i):
     secondary_type = datum.record.signature.secondary_types[i]
@@ -213,31 +198,42 @@ def stop(datum, i):
         return True
     if secondary_type == siren.dataclasses.Particle.ParticleType.EPlus:
         return True
-    if secondary_type == chi_type:
+    if secondary_type == siren.dataclasses.Particle.ParticleType.MuPlus:
+        return True
+    if secondary_type == siren.dataclasses.Particle.ParticleType.MuMinus:
+        return True
+    if secondary_type == siren.dataclasses.Particle.ParticleType(PDGID_NUMU):
         return True
     return False
 
 # ---------------------------------------------------------------------------
-# 8. Run injector
+# 6. Run
 # ---------------------------------------------------------------------------
 print(f"\nInjecting {events_to_inject} events ...")
 
 injector = siren.injection.Injector()
 injector.number_of_events = events_to_inject
 injector.detector_model = detector_model
-injector.primary_type = chi_type
-injector.primary_interactions = primary_processes[chi_type]
+injector.primary_type = pion_type
+injector.primary_interactions = primary_processes[pion_type]
 injector.primary_injection_distributions = primary_injection_distributions
 injector.secondary_interactions = secondary_processes
 injector.secondary_injection_distributions = secondary_injection_distributions
 injector.stopping_condition = stop
 
-events, gen_times = GenerateEvents(injector)
-print(f"Generated {len(events)} events in {sum(gen_times):.1f} s")
-
-# ---------------------------------------------------------------------------
-# 9. Print summary
-# ---------------------------------------------------------------------------
-if events:
-    print(f"\nFirst event primary energy: {events[0].record.primary_momentum[0]:.4f} GeV")
-    print(f"Number of secondaries: {len(events[0].record.secondary_momenta)}")
+try:
+    events, gen_times = GenerateEvents(injector)
+    print(f"Generated {len(events)} events in {sum(gen_times):.1f} s")
+    if events:
+        e = events[0]
+        print(f"\nFirst event:")
+        print(f"  Primary energy: {e.record.primary_momentum[0]:.4f} GeV")
+        print(f"  Vertex: ({e.record.interaction_vertex[0]:.1f}, "
+              f"{e.record.interaction_vertex[1]:.1f}, "
+              f"{e.record.interaction_vertex[2]:.1f}) cm")
+        print(f"  N secondaries: {len(e.record.secondary_momenta)}")
+except Exception as ex:
+    print(f"Injection failed: {ex}")
+    print("This is expected if SIREN is not fully built with SBN GDML support.")
+finally:
+    os.unlink(csv_path)

@@ -407,6 +407,210 @@ class MesonSimpleDecay(DarkNewsDecay):
 
 
 # ===================================================================
+#  MesonThreeBodySIRENDecay -- pi/K -> l nu V1 (SIREN interface)
+# ===================================================================
+
+class MesonThreeBodySIRENDecay(DarkNewsDecay):
+    """
+    Three-body meson decay M -> l nu V1 for SIREN injection.
+
+    Samples the three-body phase space using the Carlson-Rislow
+    matrix element via rejection sampling in the meson rest frame,
+    then boosts all three daughters to the lab frame.
+
+    This is the SIREN-interface version of MesonThreeBodyDecay.
+    """
+
+    _PDGID_V1 = 5922
+
+    def __init__(
+        self,
+        m_meson=_M_PI,
+        m_lepton=_M_MU,
+        m_mediator=0.017,
+        g_mu=1.0,
+        mediator_type="scalar",
+        *,
+        pdgid_meson=_PDGID_PIPLUS,
+        pdgid_lepton=_PDGID_MUPLUS,
+        pdgid_neutrino=_PDGID_NUMU,
+        pdgid_mediator=5922,
+        table_dir=None,
+    ):
+        DarkNewsDecay.__init__(self)
+
+        self.m_meson = m_meson
+        self.m_lepton = m_lepton
+        self.m_mediator = m_mediator
+        self.m_nu = 0.0
+
+        self.pdgid_meson = pdgid_meson
+        self.pdgid_lepton = pdgid_lepton
+        self.pdgid_neutrino = pdgid_neutrino
+        self.pdgid_mediator = pdgid_mediator
+
+        self._decay = MesonThreeBodyDecay(
+            m_meson, m_lepton, m_mediator, g_mu, mediator_type
+        )
+
+        self.table_dir = table_dir or "."
+        os.makedirs(self.table_dir, exist_ok=True)
+
+        self._total_width = self._decay.total_width()
+        self._max_matel = self._find_max_matel()
+
+    def _find_max_matel(self, n_samples=10000):
+        """Find approximate maximum of |M|^2 for rejection sampling."""
+        d = self._decay
+        max_val = 0.0
+        for _ in range(n_samples):
+            E_nu = np.random.uniform(0, d.E_nu_max)
+            lims = d._E_phi_limits(E_nu)
+            if lims[0] is None:
+                continue
+            E_phi = np.random.uniform(lims[0], lims[1])
+            if d.m_M - E_nu - E_phi < d.m_l:
+                continue
+            val = d._matel_sq(E_nu, E_phi)
+            if val > max_val:
+                max_val = val
+        return max_val * 1.2  # safety margin
+
+    def GetPossibleSignatures(self):
+        sig = dataclasses.InteractionSignature()
+        sig.primary_type = Particle.ParticleType(self.pdgid_meson)
+        sig.target_type = Particle.ParticleType.Decay
+        sig.secondary_types = [
+            Particle.ParticleType(self.pdgid_lepton),
+            Particle.ParticleType(self.pdgid_neutrino),
+            Particle.ParticleType(self.pdgid_mediator),
+        ]
+        return [sig]
+
+    def GetPossibleSignaturesFromParent(self, primary_type):
+        if int(primary_type) == self.pdgid_meson:
+            return self.GetPossibleSignatures()
+        return []
+
+    def TotalDecayWidth(self, arg1):
+        if isinstance(arg1, dataclasses.InteractionRecord):
+            primary = arg1.signature.primary_type
+        else:
+            primary = arg1
+        if int(primary) != self.pdgid_meson:
+            return 0.0
+        return self._total_width
+
+    def TotalDecayWidthForFinalState(self, record):
+        if int(record.signature.primary_type) != self.pdgid_meson:
+            return 0.0
+        return self._total_width
+
+    def DifferentialDecayWidth(self, record):
+        if int(record.signature.primary_type) != self.pdgid_meson:
+            return 0.0
+        return self._total_width / (4.0 * math.pi)
+
+    def save_to_table(self, table_subdir=None):
+        pass
+
+    def SampleFinalState(self, record, random):
+        """
+        Rejection-sample (E_nu, E_phi) from the Carlson-Rislow matrix
+        element in the meson rest frame, construct all three daughters,
+        and boost to the lab frame.
+        """
+        d = self._decay
+        P_parent = np.array(record.primary_momentum)
+
+        max_attempts = 10000
+        for _ in range(max_attempts):
+            E_nu = random.Uniform(0.0, d.E_nu_max)
+            lims = d._E_phi_limits(E_nu)
+            if lims[0] is None:
+                continue
+            E_phi = random.Uniform(lims[0], lims[1])
+            E_l = d.m_M - E_nu - E_phi
+            if E_l < d.m_l:
+                continue
+            matel = d._matel_sq(E_nu, E_phi)
+            u = random.Uniform(0.0, self._max_matel)
+            if u <= matel:
+                break
+        else:
+            E_nu = d.E_nu_max * 0.5
+            lims = d._E_phi_limits(E_nu)
+            E_phi = 0.5 * (lims[0] + lims[1]) if lims[0] is not None else d.m_mediator
+            E_l = d.m_M - E_nu - E_phi
+
+        p_nu = E_nu
+        p_l = math.sqrt(max(E_l**2 - d.m_l**2, 0.0))
+        p_phi = math.sqrt(max(E_phi**2 - d.m_phi**2, 0.0))
+
+        cos_nu = random.Uniform(-1.0, 1.0)
+        phi_nu = random.Uniform(0.0, 2.0 * math.pi)
+
+        P_nu_lab = _boost_to_lab(P_parent, p_nu, cos_nu, phi_nu, 0.0)
+
+        cos_phi_rf = ((d.m_M - E_nu) * (d.m_M - E_nu)
+                      - E_phi**2 - E_l**2 + d.m_l**2
+                      + 2.0 * E_nu * E_phi) / (2.0 * p_nu * p_phi) if p_nu > 0 and p_phi > 0 else 0.0
+        cos_phi_rf = max(-1.0, min(1.0, cos_phi_rf))
+
+        sin_nu = math.sqrt(max(1.0 - cos_nu**2, 0.0))
+        nu_dir = np.array([
+            sin_nu * math.cos(phi_nu),
+            sin_nu * math.sin(phi_nu),
+            cos_nu,
+        ])
+
+        perp1 = np.cross(nu_dir, np.array([0, 0, 1]))
+        if np.linalg.norm(perp1) < 1e-10:
+            perp1 = np.cross(nu_dir, np.array([0, 1, 0]))
+        perp1 = perp1 / np.linalg.norm(perp1)
+        perp2 = np.cross(nu_dir, perp1)
+
+        azimuth = random.Uniform(0.0, 2.0 * math.pi)
+        sin_phi_rf = math.sqrt(max(1.0 - cos_phi_rf**2, 0.0))
+        phi_dir = (cos_phi_rf * nu_dir
+                   + sin_phi_rf * math.cos(azimuth) * perp1
+                   + sin_phi_rf * math.sin(azimuth) * perp2)
+
+        E_phi_lab = math.sqrt(p_phi**2 + d.m_phi**2)
+        P_phi_rf = np.array([E_phi_lab, *(p_phi * phi_dir)])
+        P_l_rf = np.array([d.m_M, 0, 0, 0]) - np.array([E_nu, *(p_nu * nu_dir)]) - P_phi_rf
+
+        P_phi_lab = _boost_to_lab(P_parent, p_phi,
+                                  float(phi_dir[2] / max(np.linalg.norm(phi_dir), 1e-12)),
+                                  math.atan2(float(phi_dir[1]), float(phi_dir[0])),
+                                  d.m_phi)
+
+        p_l_3 = P_l_rf[1:]
+        p_l_mag = np.linalg.norm(p_l_3)
+        if p_l_mag > 0:
+            l_dir = p_l_3 / p_l_mag
+            P_l_lab = _boost_to_lab(P_parent, p_l,
+                                    float(l_dir[2]),
+                                    math.atan2(float(l_dir[1]), float(l_dir[0])),
+                                    d.m_l)
+        else:
+            P_l_lab = _boost_to_lab(P_parent, p_l, 0.0, 0.0, d.m_l)
+
+        for sec in record.get_secondary_particle_records():
+            pid = int(sec.type)
+            if pid == self.pdgid_lepton:
+                sec.four_momentum = P_l_lab
+                sec.mass = d.m_l
+            elif pid == self.pdgid_neutrino:
+                sec.four_momentum = P_nu_lab
+                sec.mass = 0.0
+            elif pid == self.pdgid_mediator:
+                sec.four_momentum = P_phi_lab
+                sec.mass = d.m_phi
+        return record
+
+
+# ===================================================================
 #  build_phi_flux  --  construct mediator flux at detector
 # ===================================================================
 

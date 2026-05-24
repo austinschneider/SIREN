@@ -277,6 +277,84 @@ def dk2nu_to_tabulated_flux(
     )
 
 
+def dk2nu_to_csv(
+    dk2nu_data,
+    output_path,
+    parent_pdg=None,
+    position_transform=None,
+    units_cm=True,
+):
+    """
+    Write dk2nu parent meson kinematics to a CSV file suitable for
+    SIREN's PrimaryExternalDistribution.
+
+    The CSV has columns: E, px, py, pz, x0, y0, z0, m, nimpwt
+
+    Parameters
+    ----------
+    dk2nu_data : dict
+        Output of read_dk2nu().
+    output_path : str
+        Path to write the CSV file.
+    parent_pdg : int or list of int, optional
+        Filter to specific parent PDG code(s).  Default: use all entries
+        in dk2nu_data (which may already be filtered).
+    position_transform : callable, optional
+        Function that takes (vx, vy, vz) arrays in dk2nu coordinates
+        and returns (x0, y0, z0) arrays in detector coordinates.
+        dk2nu positions are in cm.  If None, positions are used as-is.
+    units_cm : bool
+        If True (default), positions in the CSV are in cm.
+        If False, positions are converted to meters.
+
+    Returns
+    -------
+    int
+        Number of rows written.
+    """
+    ptype = dk2nu_data["ptype"]
+    if parent_pdg is not None:
+        if not hasattr(parent_pdg, "__iter__"):
+            parent_pdg = [parent_pdg]
+        mask = np.isin(ptype, parent_pdg)
+    else:
+        mask = np.ones(len(ptype), dtype=bool)
+
+    E = dk2nu_data["E"][mask]
+    px = dk2nu_data["px"][mask]
+    py = dk2nu_data["py"][mask]
+    pz = dk2nu_data["pz"][mask]
+    vx = dk2nu_data["vx"][mask]
+    vy = dk2nu_data["vy"][mask]
+    vz = dk2nu_data["vz"][mask]
+    nimpwt = dk2nu_data["nimpwt"][mask]
+    pt = ptype[mask]
+
+    if position_transform is not None:
+        vx, vy, vz = position_transform(vx, vy, vz)
+
+    scale = 1.0 if units_cm else 0.01
+
+    mass_map = {
+        211: 0.13957039, -211: 0.13957039,
+        321: 0.49368,    -321: 0.49368,
+        130: 0.49761,
+        13: 0.10566,     -13: 0.10566,
+    }
+
+    with open(output_path, "w") as f:
+        f.write("E,px,py,pz,x0,y0,z0,m,nimpwt\n")
+        for i in range(len(E)):
+            m = mass_map.get(int(pt[i]), 0.13957)
+            f.write(
+                f"{E[i]:.8e},{px[i]:.8e},{py[i]:.8e},{pz[i]:.8e},"
+                f"{vx[i]*scale:.8e},{vy[i]*scale:.8e},{vz[i]*scale:.8e},"
+                f"{m:.8e},{nimpwt[i]:.8e}\n"
+            )
+
+    return int(np.sum(mask))
+
+
 def print_summary(dk2nu_data):
     """Print a summary of the dk2nu data."""
     ptypes = dk2nu_data["ptype"]
