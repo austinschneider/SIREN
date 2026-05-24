@@ -751,25 +751,19 @@ class BiasedMesonThreeBodyDecay(_Decay):
     """
     Biased three-body meson decay M -> l nu V1 for SIREN injection.
 
-    The V1 direction is sampled from a cone pointed at a target
-    position (detector center) from the decay vertex.  The V1 energy
-    is sampled from the physical marginal distribution.
+    The V1 direction is sampled from an energy-dependent cone pointed
+    at the detector center.  The cone opening angle adapts to the
+    V1 lab energy: for a given V1 energy, the cone covers the maximum
+    angular spread of chi particles from the subsequent V1 -> chi chi
+    decay (determined by m_chi and the V1 boost).
+
+    This ensures that no chi-reachable phase space is cut regardless
+    of the V1 energy, while maintaining high injection efficiency for
+    boosted V1.
 
     DifferentialDecayWidth returns the same physical rate as the
     unbiased version.  FinalStateProbability returns the biased
-    generation density so the Weighter can correct via importance
-    sampling: w = DifferentialDecayWidth / (TotalDecayWidth * FinalStateProbability).
-
-    Parameters
-    ----------
-    detector_position : array-like, shape (3,)
-        Detector center in detector coordinates [meters].
-    cone_half_angle : float or None
-        Half-opening angle of the cone [radians].  If None, computed
-        from the detector solid angle at each decay vertex.
-    detector_radius : float
-        Effective detector radius [meters], used to compute the cone
-        opening angle when cone_half_angle is None.
+    generation density in the same lab-frame variables.
     """
 
     def __init__(
@@ -777,12 +771,14 @@ class BiasedMesonThreeBodyDecay(_Decay):
         m_meson=_M_PI,
         m_lepton=_M_MU,
         m_mediator=0.017,
+        m_chi=0.008,
         g_mu=1.0,
         mediator_type="scalar",
         *,
         detector_position=(0.0, 0.0, 0.0),
         cone_half_angle=None,
         detector_radius=2.0,
+        safety_factor=1.5,
         pdgid_meson=_PDGID_PIPLUS,
         pdgid_lepton=_PDGID_MUPLUS,
         pdgid_neutrino=_PDGID_NUMU,
@@ -802,8 +798,10 @@ class BiasedMesonThreeBodyDecay(_Decay):
         self.pdgid_mediator = pdgid_mediator
 
         self.detector_position = np.array(detector_position, dtype=float)
+        self.m_chi = m_chi
         self.cone_half_angle = cone_half_angle
         self.detector_radius = detector_radius
+        self.safety_factor = safety_factor
 
         self._decay = MesonThreeBodyDecay(
             m_meson, m_lepton, m_mediator, g_mu, mediator_type
@@ -814,6 +812,11 @@ class BiasedMesonThreeBodyDecay(_Decay):
 
         self._total_width = self._decay.total_width()
         self._max_matel = self._find_max_matel()
+
+        # Precompute chi kinematics for energy-dependent cone
+        self._p_cm_chi = _two_body_p_cm(m_mediator, m_chi, m_chi)
+        self._E_chi_rf = math.sqrt(self._p_cm_chi**2 + m_chi**2) if m_mediator >= 2 * m_chi else 0.0
+        self._beta_chi = self._p_cm_chi / self._E_chi_rf if self._E_chi_rf > 0 else 0.0
 
     def _find_max_matel(self, n_samples=10000):
         d = self._decay
@@ -831,8 +834,20 @@ class BiasedMesonThreeBodyDecay(_Decay):
                 max_val = val
         return max_val * 1.2
 
-    def _get_cone_params(self, decay_vertex):
-        """Compute cone axis (unit vector) and half-angle from decay vertex to detector."""
+    def _chi_theta_max(self, E_V1):
+        """Maximum lab-frame chi angle from V1 -> chi chi at given V1 energy."""
+        m_V = self.m_mediator
+        if E_V1 <= m_V or self._E_chi_rf <= 0:
+            return math.pi
+        gamma = E_V1 / m_V
+        beta_V = math.sqrt(1.0 - 1.0 / gamma**2)
+        if self._beta_chi >= beta_V:
+            return math.pi
+        sin_max = self._p_cm_chi / (gamma * self._E_chi_rf * beta_V)
+        return math.asin(min(sin_max, 1.0))
+
+    def _get_cone_params(self, decay_vertex, E_V1_lab=None):
+        """Compute cone axis and energy-dependent half-angle."""
         delta = self.detector_position - np.array(decay_vertex)
         dist = np.linalg.norm(delta)
         if dist < 1e-6:
@@ -842,7 +857,13 @@ class BiasedMesonThreeBodyDecay(_Decay):
         if self.cone_half_angle is not None:
             half_angle = self.cone_half_angle
         else:
-            half_angle = math.atan2(self.detector_radius, dist)
+            theta_det = math.atan2(self.detector_radius, dist)
+            if E_V1_lab is not None and self._E_chi_rf > 0:
+                theta_chi = self._chi_theta_max(E_V1_lab)
+                half_angle = max(theta_det, theta_chi * self.safety_factor)
+            else:
+                half_angle = theta_det
+            half_angle = min(half_angle, math.pi)
 
         return axis, half_angle
 
@@ -929,7 +950,7 @@ class BiasedMesonThreeBodyDecay(_Decay):
 
         E_V, cos_V, _ = _extract_V_lab_angles(P_parent, P_V, self.m_meson)
 
-        _, half_angle = self._get_cone_params(record.interaction_vertex)
+        _, half_angle = self._get_cone_params(record.interaction_vertex, E_V)
         omega = self._cone_solid_angle(half_angle)
 
         E_phi_rf = _rest_frame_E_phi(E_V, cos_V, E_pi, p_pi, self.m_meson, self.m_mediator)
@@ -968,14 +989,17 @@ class BiasedMesonThreeBodyDecay(_Decay):
         beta = p_pi / E_pi if E_pi > 0 else 0.0
 
         decay_vertex = np.array(record.interaction_vertex)
-        cone_axis, half_angle = self._get_cone_params(decay_vertex)
 
         E_nu_rf, E_phi_rf = _sample_rest_frame(self._decay, self._max_matel, random)
 
         p_phi_rf = math.sqrt(max(E_phi_rf**2 - self.m_mediator**2, 0.0))
         E_V_lab_fwd = gamma * (E_phi_rf + beta * p_phi_rf)
         E_V_lab_bwd = gamma * (E_phi_rf - beta * p_phi_rf)
-        p_V_lab = math.sqrt(max(((E_V_lab_fwd + E_V_lab_bwd)/2)**2 - self.m_mediator**2, 0.0))
+        E_V_lab_avg = (E_V_lab_fwd + E_V_lab_bwd) / 2
+        p_V_lab = math.sqrt(max(E_V_lab_avg**2 - self.m_mediator**2, 0.0))
+
+        # Energy-dependent cone: adapts to the chi opening angle at this V1 energy
+        cone_axis, half_angle = self._get_cone_params(decay_vertex, E_V_lab_avg)
 
         cos_cone = random.Uniform(math.cos(half_angle), 1.0)
         phi_cone = random.Uniform(0.0, 2.0 * math.pi)

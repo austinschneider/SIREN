@@ -784,12 +784,16 @@ class DarkPhotonToChiDecay(_Decay):
 
 class BiasedDarkPhotonToChiDecay(_Decay):
     """
-    Biased V1 -> chi chi_bar decay.
+    Biased V1 -> chi chi_bar decay with energy-dependent cone.
 
-    One chi is sampled toward a target position (detector center) via
-    a cone.  The other chi goes in the opposite direction in the rest
-    frame.  FinalStateProbability returns the cone density so the
-    Weighter can correct via importance sampling.
+    The cone opening angle adapts to the V1 energy: for highly boosted
+    V1, chi is collimated and a narrow cone suffices.  For slow V1,
+    chi spreads widely and a broader cone is needed.
+
+    The cone half-angle is:
+        theta_cone = max(theta_det, theta_max_chi * safety_factor)
+    where theta_max_chi is the maximum lab-frame chi angle from the
+    V1 rest-frame decay kinematics.
     """
 
     def __init__(
@@ -801,6 +805,7 @@ class BiasedDarkPhotonToChiDecay(_Decay):
         detector_position=(0.0, 0.0, 0.0),
         cone_half_angle=None,
         detector_radius=2.0,
+        safety_factor=1.5,
         pdgid_V1=5922,
         pdgid_chi=5917,
         table_dir=None,
@@ -815,6 +820,7 @@ class BiasedDarkPhotonToChiDecay(_Decay):
         self.detector_position = np.array(detector_position, dtype=float)
         self.cone_half_angle = cone_half_angle
         self.detector_radius = detector_radius
+        self.safety_factor = safety_factor
 
         self.table_dir = table_dir or "."
         os.makedirs(self.table_dir, exist_ok=True)
@@ -826,16 +832,41 @@ class BiasedDarkPhotonToChiDecay(_Decay):
             beta = math.sqrt(max(1.0 - (2.0 * mc / mV)**2, 0.0))
             self._total_width = g_D**2 * mV / (12.0 * math.pi) * beta**3
 
-    def _get_cone_params(self, decay_vertex):
+        self._p_cm = _two_body_p_cm(m_V1, m_chi, m_chi)
+        self._E_chi_rf = math.sqrt(self._p_cm**2 + m_chi**2)
+        self._beta_chi = self._p_cm / self._E_chi_rf if self._E_chi_rf > 0 else 0.0
+
+    def _chi_theta_max(self, E_V1):
+        """Maximum lab-frame chi opening angle for a V1 with energy E_V1."""
+        if E_V1 <= self.m_V1:
+            return math.pi
+        gamma = E_V1 / self.m_V1
+        beta_V = math.sqrt(1.0 - 1.0 / gamma**2)
+        if self._beta_chi >= beta_V:
+            return math.pi
+        # sin(theta_max) = p_cm / (gamma * E_chi_rf * beta_V)
+        # (from the standard relativistic decay angle formula)
+        sin_max = self._p_cm / (gamma * self._E_chi_rf * beta_V)
+        return math.asin(min(sin_max, 1.0))
+
+    def _get_cone_params(self, decay_vertex, E_V1=None):
         delta = self.detector_position - np.array(decay_vertex)
         dist = np.linalg.norm(delta)
         if dist < 1e-6:
             return np.array([0, 0, 1.0]), math.pi
         axis = delta / dist
+
         if self.cone_half_angle is not None:
             half_angle = self.cone_half_angle
         else:
-            half_angle = math.atan2(self.detector_radius, dist)
+            theta_det = math.atan2(self.detector_radius, dist)
+            if E_V1 is not None:
+                theta_chi = self._chi_theta_max(E_V1)
+                half_angle = max(theta_det, theta_chi * self.safety_factor)
+            else:
+                half_angle = theta_det
+            half_angle = min(half_angle, math.pi)
+
         return axis, half_angle
 
     def GetPossibleSignatures(self):
@@ -873,8 +904,9 @@ class BiasedDarkPhotonToChiDecay(_Decay):
         return self._total_width / (4.0 * math.pi)
 
     def FinalStateProbability(self, record):
-        """Biased density: isotropic in energy, cone in direction -> 1/Omega_cone."""
-        _, half_angle = self._get_cone_params(record.interaction_vertex)
+        """Biased density: energy-dependent cone -> 1/Omega_cone(E_V1)."""
+        E_V1 = record.primary_momentum[0]
+        _, half_angle = self._get_cone_params(record.interaction_vertex, E_V1)
         omega = 2.0 * math.pi * (1.0 - math.cos(half_angle))
         return 1.0 / omega if omega > 0 else 0.0
 
@@ -888,11 +920,12 @@ class BiasedDarkPhotonToChiDecay(_Decay):
         return self is other
 
     def SampleFinalState(self, record, random):
-        p_cm = _two_body_p_cm(self.m_V1, self.m_chi, self.m_chi)
+        p_cm = self._p_cm
         P_parent = np.array(record.primary_momentum)
+        E_V1 = P_parent[0]
         decay_vertex = np.array(record.interaction_vertex)
 
-        cone_axis, half_angle = self._get_cone_params(decay_vertex)
+        cone_axis, half_angle = self._get_cone_params(decay_vertex, E_V1)
 
         cos_cone = random.Uniform(math.cos(half_angle), 1.0)
         phi_cone = random.Uniform(0.0, 2.0 * math.pi)

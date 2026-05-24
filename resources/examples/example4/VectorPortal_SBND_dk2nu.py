@@ -146,6 +146,7 @@ pion_decay_biased = BiasedMesonThreeBodyDecay(
     m_meson=M_PION,
     m_lepton=M_MUON,
     m_mediator=M_V1,
+    m_chi=M_CHI,
     g_mu=G_MU,
     mediator_type="scalar",
     detector_position=(0.0, 0.0, 0.0),
