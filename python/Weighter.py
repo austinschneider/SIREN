@@ -106,21 +106,33 @@ class Weighter:
         injectors = [injector._Injector__injector if isinstance(injector, _PyInjector) else injector for injector in self.__injectors]
 
         primary_type = self.primary_type
+
+        def _split_interactions(interactions):
+            """Separate a list of interactions into cross sections and decays."""
+            xs = [i for i in interactions if isinstance(i, _interactions.CrossSection)]
+            ds = [i for i in interactions if isinstance(i, _interactions.Decay)]
+            return xs, ds
+
+        xs, ds = _split_interactions(self.primary_interactions)
         primary_interaction_collection = _interactions.InteractionCollection(
-            primary_type, self.primary_interactions
+            primary_type, xs, ds
         )
         primary_process = _injection.PhysicalProcess(
             primary_type, primary_interaction_collection
         )
         primary_process.distributions = self.primary_physical_distributions
 
+        # Keep references to all interaction objects to prevent GC
+        self.__all_interactions = list(self.primary_interactions)
+
         secondary_interactions = self.secondary_interactions
         secondary_physical_distributions = self.secondary_physical_distributions
 
         secondary_processes = []
-        for secondary_type, secondary_interactions in secondary_interactions.items():
+        for secondary_type, sec_interactions in secondary_interactions.items():
+            xs, ds = _split_interactions(sec_interactions)
             secondary_interaction_collection = _interactions.InteractionCollection(
-                secondary_type, secondary_interactions
+                secondary_type, xs, ds
             )
             secondary_process = _injection.PhysicalProcess(
                 secondary_type, secondary_interaction_collection
@@ -130,6 +142,7 @@ class Weighter:
             else:
                 secondary_process.distributions = []
             secondary_processes.append(secondary_process)
+            self.__all_interactions.extend(sec_interactions)
 
         self.__weighter = _Weighter(
             injectors,
