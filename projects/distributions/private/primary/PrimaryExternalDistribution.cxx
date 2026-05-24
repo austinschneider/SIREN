@@ -10,6 +10,7 @@
 
 #include "SIREN/dataclasses/InteractionRecord.h"  // for Interactio...
 #include "SIREN/utilities/Random.h"               // for SIREN_random
+#include "SIREN/math/Vector3D.h"
 
 namespace siren {
 namespace distributions {
@@ -167,11 +168,37 @@ void PrimaryExternalDistribution::Sample(
         }
     }
     if(mom_set) record.SetThreeMomentum(_momentum);
-    if(init_pos_set) record.SetInitialPosition(_initial_position);
+    if(init_pos_set) {
+        record.SetInitialPosition(_initial_position);
+        if(!vertex_set) record.SetInteractionVertex(_initial_position);
+        _cached_position = _initial_position;
+    }
     if(vertex_set) {
         record.SetInteractionVertex(_vertex);
         if(!init_pos_set) record.SetInitialPosition(_vertex);
+        _cached_position = _vertex;
     }
+}
+
+std::tuple<siren::math::Vector3D, siren::math::Vector3D> PrimaryExternalDistribution::SamplePosition(
+        std::shared_ptr<siren::utilities::SIREN_random> rand,
+        std::shared_ptr<siren::detector::DetectorModel const> detector_model,
+        std::shared_ptr<siren::interactions::InteractionCollection const> interactions,
+        siren::dataclasses::PrimaryDistributionRecord & record) const {
+    siren::math::Vector3D pos(_cached_position[0], _cached_position[1], _cached_position[2]);
+    siren::math::Vector3D dir(0, 0, 1);
+    return std::make_tuple(pos, dir);
+}
+
+std::tuple<siren::math::Vector3D, siren::math::Vector3D> PrimaryExternalDistribution::InjectionBounds(
+        std::shared_ptr<siren::detector::DetectorModel const> detector_model,
+        std::shared_ptr<siren::interactions::InteractionCollection const> interactions,
+        siren::dataclasses::InteractionRecord const & interaction) const {
+    siren::math::Vector3D pos(interaction.interaction_vertex[0],
+                               interaction.interaction_vertex[1],
+                               interaction.interaction_vertex[2]);
+    siren::math::Vector3D end = pos;
+    return std::make_tuple(pos, end);
 }
 
 std::vector<std::string> PrimaryExternalDistribution::DensityVariables() const {

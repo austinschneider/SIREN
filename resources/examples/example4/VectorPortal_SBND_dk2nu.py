@@ -113,7 +113,7 @@ csv_file = tempfile.NamedTemporaryFile(
 csv_path = csv_file.name
 csv_file.close()
 
-n_pions = dk2nu_to_csv(dk2nu_data, csv_path, units_cm=True)
+n_pions = dk2nu_to_csv(dk2nu_data, csv_path, units_cm=False)
 print(f"Wrote {n_pions} pion entries to {csv_path}")
 
 # ---------------------------------------------------------------------------
@@ -202,7 +202,10 @@ primary_injection_distributions = [primary_dist]
 primary_physical_distributions = [primary_dist]
 
 secondary_injection_distributions = {}
-secondary_physical_distributions = {}
+for sec_type in secondary_processes.keys():
+    secondary_injection_distributions[sec_type] = [
+        siren.distributions.SecondaryBoundedVertexDistribution()
+    ]
 
 # ---------------------------------------------------------------------------
 # 5. Stopping condition

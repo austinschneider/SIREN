@@ -16,6 +16,8 @@
 #include <cereal/types/string.hpp>
 
 #include "SIREN/distributions/Distributions.h"  // for WeightableDi...
+#include "SIREN/distributions/primary/vertex/VertexPositionDistribution.h"
+#include "SIREN/math/Vector3D.h"
 
 namespace siren { namespace interactions { class InteractionCollection; } }
 namespace siren { namespace dataclasses { class InteractionRecord; } }
@@ -26,7 +28,7 @@ namespace cereal { class access; }
 namespace siren {
 namespace distributions {
 
-class PrimaryExternalDistribution : virtual public PrimaryInjectionDistribution {
+class PrimaryExternalDistribution : virtual public VertexPositionDistribution {
 friend cereal::access;
 protected:
     PrimaryExternalDistribution() {};
@@ -39,6 +41,7 @@ private:
     bool vertex_set = false;
     bool mom_set = false;
     double emin = 0;
+    mutable std::array<double, 3> _cached_position = {0.0, 0.0, 0.0};
 public:
     PrimaryExternalDistribution(std::string _filename);
     PrimaryExternalDistribution(std::string _filename, double emin);
@@ -49,6 +52,9 @@ public:
     virtual std::vector<std::string> DensityVariables() const override;
     virtual std::string Name() const override;
     virtual std::shared_ptr<PrimaryInjectionDistribution> clone() const override;
+    virtual std::tuple<siren::math::Vector3D, siren::math::Vector3D> InjectionBounds(std::shared_ptr<siren::detector::DetectorModel const> detector_model, std::shared_ptr<siren::interactions::InteractionCollection const> interactions, siren::dataclasses::InteractionRecord const & interaction) const override;
+private:
+    virtual std::tuple<siren::math::Vector3D, siren::math::Vector3D> SamplePosition(std::shared_ptr<siren::utilities::SIREN_random> rand, std::shared_ptr<siren::detector::DetectorModel const> detector_model, std::shared_ptr<siren::interactions::InteractionCollection const> interactions, siren::dataclasses::PrimaryDistributionRecord & record) const override;
     template<typename Archive>
     void save(Archive & archive, std::uint32_t const version) const {
         if(version == 0) {
@@ -87,6 +93,7 @@ protected:
 
 CEREAL_CLASS_VERSION(siren::distributions::PrimaryExternalDistribution, 0);
 CEREAL_REGISTER_TYPE(siren::distributions::PrimaryExternalDistribution);
+CEREAL_REGISTER_POLYMORPHIC_RELATION(siren::distributions::VertexPositionDistribution, siren::distributions::PrimaryExternalDistribution);
 CEREAL_REGISTER_POLYMORPHIC_RELATION(siren::distributions::PrimaryInjectionDistribution, siren::distributions::PrimaryExternalDistribution);
 
 #endif // SIREN_PrimaryExternalDistribution_H
