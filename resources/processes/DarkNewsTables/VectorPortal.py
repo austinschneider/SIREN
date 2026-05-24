@@ -525,3 +525,98 @@ def compute_chi_flux(
     return siren.distributions.TabulatedFluxDistribution(
         min_energy, max_energy, chi_energies, chi_flux_vals, physically_normalized
     )
+
+
+def compute_chi_flux_from_dk2nu(
+    dk2nu_data,
+    parent_pdg,
+    m_meson,
+    m_lepton,
+    m_V1,
+    m_chi,
+    m_chi_prime,
+    g_D,
+    epsilon,
+    min_energy,
+    max_energy,
+    n_bins=100,
+    physically_normalized=True,
+):
+    """
+    Construct the chi flux from dk2nu parent meson data.
+
+    Instead of using tabulated neutrino flux tables, this reads the
+    parent meson energies and weights directly from dk2nu simulation
+    output, giving a more accurate flux prediction that properly
+    accounts for the beamline geometry and focusing.
+
+    Parameters
+    ----------
+    dk2nu_data : dict
+        Output of Dk2nuReader.read_dk2nu().
+    parent_pdg : int
+        PDG code of parent meson (211 for pi+, 321 for K+, etc.)
+    m_meson, m_lepton, m_V1, m_chi, m_chi_prime : float
+        Masses in GeV.
+    g_D, epsilon : float
+        Dark coupling and kinetic mixing.
+    min_energy, max_energy : float
+        Energy range for the output flux [GeV].
+    n_bins : int
+        Number of bins in the output flux table.
+
+    Returns
+    -------
+    siren.distributions.TabulatedFluxDistribution
+    """
+    import siren
+
+    mask = dk2nu_data["ptype"] == parent_pdg
+    E_meson = dk2nu_data["E"][mask]
+    weights = dk2nu_data["nimpwt"][mask]
+
+    available = m_meson - m_lepton
+    if available <= m_V1 or len(E_meson) == 0:
+        energies = [min_energy, max_energy]
+        flux_arr = [0.0, 0.0]
+        return siren.distributions.TabulatedFluxDistribution(
+            min_energy, max_energy, energies, flux_arr, physically_normalized
+        )
+
+    alpha_D = g_D**2 / (4.0 * math.pi)
+    x = m_lepton / m_meson
+    y = m_V1 / m_meson
+    if (1.0 - x - y) <= 0:
+        br_ratio = 0.0
+    else:
+        num = (1.0 - y**2)**2 * (1.0 + 2.0 * y**2)
+        den = (1.0 - x**2)**2
+        g_ps = num / den if den > 0 else 0.0
+        br_ratio = 2.0 * (alpha_D / _ALPHA_EM) * epsilon**2 * g_ps
+
+    E_chi_rf = (m_V1**2 + m_chi**2) / (2.0 * m_V1) if m_V1 > 0 else 0.0
+    E_V_rest = (m_meson**2 + m_V1**2 - m_lepton**2) / (2.0 * m_meson)
+
+    gamma_mesons = E_meson / m_meson
+    E_V_lab = gamma_mesons * E_V_rest
+    gamma_V1 = E_V_lab / m_V1 if m_V1 > 0 else np.ones_like(E_V_lab)
+    E_chi = gamma_V1 * E_chi_rf
+
+    chi_weights = weights * br_ratio * 0.5
+
+    E_edges = np.linspace(min_energy, max_energy, n_bins + 1)
+    hist, _ = np.histogram(E_chi, bins=E_edges, weights=chi_weights)
+    dE = E_edges[1] - E_edges[0]
+    E_centers = 0.5 * (E_edges[:-1] + E_edges[1:])
+
+    pot = dk2nu_data.get("pot", 0.0)
+    if pot > 0:
+        flux_vals = hist / (dE * pot)
+    else:
+        flux_vals = hist / dE
+
+    return siren.distributions.TabulatedFluxDistribution(
+        min_energy, max_energy,
+        list(E_centers), list(flux_vals),
+        physically_normalized,
+    )
