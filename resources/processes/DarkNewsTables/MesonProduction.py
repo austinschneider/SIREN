@@ -1,0 +1,509 @@
+"""
+Meson three-body decay and scalar/pseudoscalar production for SIREN.
+
+Implements charged meson three-body decays pi/K -> l nu phi from
+Dutta, Kim, Thompson, Thornton, Van de Water, PRL 129, 111803 (2022),
+using the Carlson-Rislow matrix element (Phys.Rev.D 86, 035013, 2012).
+
+Also provides MesonSimpleDecay (pi -> mu nu) for external-distribution
+pipelines, and build_phi_flux() for constructing the scalar mediator
+flux at the detector.
+
+All classes are self-contained with no DarkNews imports.
+"""
+
+import os
+import math
+import numpy as np
+import scipy.integrate as _integrate
+
+from siren.interactions import DarkNewsDecay
+from siren import dataclasses
+from siren.dataclasses import Particle
+
+
+# ---------------------------------------------------------------------------
+# Physical constants
+# ---------------------------------------------------------------------------
+
+_GF = 1.16638e-5       # Fermi constant [GeV^-2]
+_FPI = 0.1307           # pion decay constant [GeV]
+_FK = 0.1598            # kaon decay constant [GeV]
+_VUD = 0.9737           # CKM |V_ud|
+_VUS = 0.2245           # CKM |V_us|
+_ALPHA_EM = 1.0 / 137.036
+
+_M_PI = 0.13957039      # charged pion mass [GeV]
+_M_K = 0.49368          # charged kaon mass [GeV]
+_M_MU = 0.10565837      # muon mass [GeV]
+_M_E = 0.000511         # electron mass [GeV]
+
+# PDG IDs
+_PDGID_PIPLUS = 211
+_PDGID_KPLUS = 321
+_PDGID_MUPLUS = -13
+_PDGID_EPLUS = -11
+_PDGID_NUMU = 14
+_PDGID_NUE = 12
+
+
+# ---------------------------------------------------------------------------
+# Kinematic helpers
+# ---------------------------------------------------------------------------
+
+def _two_body_p_cm(M, m1, m2):
+    arg = (M**2 - (m1 + m2)**2) * (M**2 - (m1 - m2)**2)
+    if arg <= 0.0:
+        return 0.0
+    return math.sqrt(arg) / (2.0 * M)
+
+
+def _boost_to_lab(P_parent, p_cm, cos_theta, phi, m_daughter):
+    E_parent = P_parent[0]
+    p_parent = P_parent[1:]
+    M_parent_sq = max(E_parent**2 - np.dot(p_parent, p_parent), 0.0)
+    M_parent = math.sqrt(M_parent_sq)
+
+    sin_theta = math.sqrt(max(1.0 - cos_theta**2, 0.0))
+    E_rf = math.sqrt(p_cm**2 + m_daughter**2)
+    p_rf = np.array([
+        p_cm * sin_theta * math.cos(phi),
+        p_cm * sin_theta * math.sin(phi),
+        p_cm * cos_theta,
+    ])
+
+    p_mag = np.linalg.norm(p_parent)
+    if p_mag < 1e-12 or M_parent < 1e-12:
+        return np.array([E_rf, *p_rf])
+
+    beta = p_mag / E_parent
+    gamma = E_parent / M_parent
+    beta_hat = p_parent / p_mag
+
+    p_par = np.dot(p_rf, beta_hat)
+    p_perp = p_rf - p_par * beta_hat
+
+    E_lab = gamma * (E_rf + beta * p_par)
+    p_par_lab = gamma * (p_par + beta * E_rf)
+    return np.array([E_lab, *(p_par_lab * beta_hat + p_perp)])
+
+
+# ---------------------------------------------------------------------------
+# Meson decay constants and CKM elements
+# ---------------------------------------------------------------------------
+
+def _meson_params(m_meson):
+    """Return (f_M, V_Mq) for a given meson mass."""
+    if abs(m_meson - _M_PI) < 0.01:
+        return _FPI, _VUD
+    elif abs(m_meson - _M_K) < 0.01:
+        return _FK, _VUS
+    return _FPI, _VUD
+
+
+# ===================================================================
+#  Carlson-Rislow matrix element for M -> l nu phi
+# ===================================================================
+
+def _matel_sq_scalar(E_nu, E_phi, m_M, m_l, m_phi, C2):
+    """
+    Spin-summed |M|^2 for scalar coupling.
+    Carlson & Rislow, Phys.Rev.D 86, 035013 (2012), Eq. 25.
+    """
+    t = m_M**2 - 2.0 * m_M * E_nu
+    u = m_M**2 + m_phi**2 - 2.0 * m_M * E_phi
+    D = t - m_l**2
+    if D <= 0.0:
+        return 0.0
+    common = ((t + u - m_phi**2) * t * D
+              - (t**2 - m_l**2 * m_M**2) * (t + m_l**2 - m_phi**2))
+    mass_term = m_l**2 * t * (m_M**2 - t)
+    T_S = 8.0 * (common + 2.0 * mass_term)
+    return max(C2 * T_S / D**2, 0.0)
+
+
+def _matel_sq_pseudo(E_nu, E_phi, m_M, m_l, m_phi, C2):
+    """
+    Spin-summed |M|^2 for pseudoscalar coupling.
+    Same as scalar but with sign flip on the mass term.
+    """
+    t = m_M**2 - 2.0 * m_M * E_nu
+    u = m_M**2 + m_phi**2 - 2.0 * m_M * E_phi
+    D = t - m_l**2
+    if D <= 0.0:
+        return 0.0
+    common = ((t + u - m_phi**2) * t * D
+              - (t**2 - m_l**2 * m_M**2) * (t + m_l**2 - m_phi**2))
+    mass_term = m_l**2 * t * (m_M**2 - t)
+    T_P = 8.0 * (common - 2.0 * mass_term)
+    return max(C2 * T_P / D**2, 0.0)
+
+
+# ===================================================================
+#  MesonThreeBodyDecay  --  pi/K -> l nu phi
+# ===================================================================
+
+class MesonThreeBodyDecay:
+    """
+    Three-body charged meson decay M -> l nu phi (scalar or pseudoscalar).
+
+    This is a pure-physics class (no SIREN C++ base).  It can be used
+    standalone for rate calculations, or wrapped by build_phi_flux() to
+    construct the mediator flux at a detector.
+
+    Parameters
+    ----------
+    m_meson : float
+        Parent meson mass [GeV].
+    m_lepton : float
+        Final-state charged lepton mass [GeV].
+    m_mediator : float
+        Scalar/pseudoscalar mediator mass [GeV].
+    g_mu : float
+        Yukawa coupling of the mediator to the muon.
+    mediator_type : str
+        "scalar" or "pseudoscalar".
+    """
+
+    def __init__(self, m_meson, m_lepton, m_mediator, g_mu, mediator_type="scalar"):
+        self.m_M = m_meson
+        self.m_l = m_lepton
+        self.m_phi = m_mediator
+        self.g_mu = g_mu
+        self.mediator_type = mediator_type
+
+        f_M, V_Mq = _meson_params(m_meson)
+        self.f_M = f_M
+        self.V_Mq = V_Mq
+        self._C2 = (_GF * f_M * V_Mq * g_mu)**2 / 2.0
+
+        if m_meson < m_lepton + m_mediator:
+            raise ValueError(
+                f"Kinematically forbidden: m_M={m_meson:.4f} < "
+                f"m_l+m_phi={m_lepton + m_mediator:.4f} GeV"
+            )
+
+        self.E_nu_max = (m_meson**2 - (m_lepton + m_mediator)**2) / (2.0 * m_meson)
+        self.E_phi_max = (m_meson**2 + m_mediator**2 - m_lepton**2) / (2.0 * m_meson)
+
+    def _matel_sq(self, E_nu, E_phi):
+        if self.mediator_type == "scalar":
+            return _matel_sq_scalar(E_nu, E_phi, self.m_M, self.m_l, self.m_phi, self._C2)
+        elif self.mediator_type == "pseudoscalar":
+            return _matel_sq_pseudo(E_nu, E_phi, self.m_M, self.m_l, self.m_phi, self._C2)
+        raise ValueError(f"Unknown mediator_type: {self.mediator_type}")
+
+    def _E_phi_limits(self, E_nu):
+        """Kinematically allowed E_phi range for a given E_nu (meson rest frame)."""
+        m_M = self.m_M
+        m_l = self.m_l
+        m_phi = self.m_phi
+
+        if E_nu < 0.0 or E_nu > self.E_nu_max:
+            return None, None
+
+        M_lph2 = m_M**2 - 2.0 * m_M * E_nu
+        if M_lph2 < (m_l + m_phi)**2:
+            return None, None
+
+        M_lph = math.sqrt(M_lph2)
+        lam = (M_lph2 - (m_l + m_phi)**2) * (M_lph2 - (m_l - m_phi)**2)
+        if lam < 0.0:
+            return None, None
+
+        pstar = math.sqrt(lam) / (2.0 * M_lph)
+        Estar = (M_lph2 - m_l**2 + m_phi**2) / (2.0 * M_lph)
+
+        gamma = (m_M - E_nu) / M_lph
+        beta_gamma = E_nu / M_lph
+
+        E_phi_hi = gamma * Estar + beta_gamma * pstar
+        E_phi_lo = max(gamma * Estar - beta_gamma * pstar, m_phi)
+
+        if m_M - E_nu - E_phi_lo < m_l:
+            return None, None
+
+        return E_phi_lo, E_phi_hi
+
+    def total_width(self):
+        """Total three-body decay width [GeV]."""
+        prefactor = 1.0 / (64.0 * math.pi**3 * self.m_M)
+
+        def integrand(E_phi, E_nu):
+            lims = self._E_phi_limits(E_nu)
+            if lims[0] is None:
+                return 0.0
+            if E_phi < lims[0] or E_phi > lims[1]:
+                return 0.0
+            if self.m_M - E_nu - E_phi < self.m_l:
+                return 0.0
+            return self._matel_sq(E_nu, E_phi)
+
+        result, _ = _integrate.dblquad(
+            integrand,
+            0.0, self.E_nu_max,
+            lambda Enu: (self._E_phi_limits(Enu)[0] or 0.0),
+            lambda Enu: (self._E_phi_limits(Enu)[1] or 0.0),
+            epsrel=1e-3,
+        )
+        return max(result * prefactor, 0.0)
+
+    def differential_decay_rate(self, E_phi_vals):
+        """
+        dGamma/dE_phi integrated over E_nu, evaluated at each E_phi in the array.
+        Returns array in units of GeV^{-1} (partial width per GeV of E_phi).
+        """
+        m_M = self.m_M
+        m_l = self.m_l
+        m_phi = self.m_phi
+        prefactor = 1.0 / (64.0 * math.pi**3 * m_M)
+
+        results = np.zeros_like(E_phi_vals, dtype=float)
+        E_phi_min_global = m_phi
+        E_phi_max_global = self.E_phi_max
+
+        if E_phi_max_global <= E_phi_min_global:
+            return results
+
+        for i, Ep in enumerate(E_phi_vals):
+            if Ep <= E_phi_min_global or Ep >= E_phi_max_global:
+                continue
+
+            u_val = m_M**2 + m_phi**2 - 2.0 * m_M * Ep
+            q2 = u_val
+            if q2 <= m_l**2:
+                continue
+
+            mq = math.sqrt(q2)
+            E_mu_star = (q2 + m_l**2) / (2.0 * mq)
+            p_mu_star = math.sqrt(max(E_mu_star**2 - m_l**2, 0.0))
+
+            E_q = m_M - Ep
+            p_q = math.sqrt(max(E_q**2 - q2, 0.0))
+            gamma_boost = E_q / mq
+            beta_gamma = p_q / mq
+
+            E_mu_max = gamma_boost * E_mu_star + beta_gamma * p_mu_star
+            E_mu_min = max(gamma_boost * E_mu_star - beta_gamma * p_mu_star, m_l)
+
+            if E_mu_max <= E_mu_min:
+                continue
+
+            def integrand(Emu, _Ep=Ep):
+                Enu = m_M - _Ep - Emu
+                if Enu < 0.0:
+                    return 0.0
+                return self._matel_sq(Enu, _Ep)
+
+            try:
+                val, _ = _integrate.quad(integrand, E_mu_min, E_mu_max,
+                                         limit=40, epsrel=1e-3)
+            except Exception:
+                val = 0.0
+
+            results[i] = max(val, 0.0)
+
+        return prefactor * results
+
+
+# ===================================================================
+#  MesonSimpleDecay  --  pi+ -> mu+ nu_mu  (SM two-body)
+# ===================================================================
+
+class MesonSimpleDecay(DarkNewsDecay):
+    """
+    SM two-body decay pi+ -> mu+ nu_mu.
+    Width: Gamma = G_F^2 f_pi^2 |V_ud|^2 m_pi m_mu^2 (1 - m_mu^2/m_pi^2)^2 / (8 pi)
+    """
+
+    def __init__(
+        self,
+        m_meson=_M_PI,
+        m_lepton=_M_MU,
+        *,
+        pdgid_meson=_PDGID_PIPLUS,
+        pdgid_lepton=_PDGID_MUPLUS,
+        pdgid_neutrino=_PDGID_NUMU,
+        table_dir=None,
+    ):
+        DarkNewsDecay.__init__(self)
+
+        self.m_meson = m_meson
+        self.m_lepton = m_lepton
+        self.m_nu = 0.0
+        self.pdgid_meson = pdgid_meson
+        self.pdgid_lepton = pdgid_lepton
+        self.pdgid_neutrino = pdgid_neutrino
+
+        f_M, V_Mq = _meson_params(m_meson)
+        self.f_M = f_M
+        self.V_Mq = V_Mq
+
+        self.table_dir = table_dir or "."
+        os.makedirs(self.table_dir, exist_ok=True)
+        self._total_width = self._compute_width()
+
+    def _compute_width(self):
+        r = (self.m_lepton / self.m_meson)**2
+        return (_GF**2 * self.f_M**2 * self.V_Mq**2
+                * self.m_meson * self.m_lepton**2
+                * (1.0 - r)**2 / (8.0 * math.pi))
+
+    def GetPossibleSignatures(self):
+        sig = dataclasses.InteractionSignature()
+        sig.primary_type = Particle.ParticleType(self.pdgid_meson)
+        sig.target_type = Particle.ParticleType.Decay
+        sig.secondary_types = [
+            Particle.ParticleType(self.pdgid_lepton),
+            Particle.ParticleType(self.pdgid_neutrino),
+        ]
+        return [sig]
+
+    def GetPossibleSignaturesFromParent(self, primary_type):
+        if int(primary_type) == self.pdgid_meson:
+            return self.GetPossibleSignatures()
+        return []
+
+    def TotalDecayWidth(self, arg1):
+        if isinstance(arg1, dataclasses.InteractionRecord):
+            primary = arg1.signature.primary_type
+        else:
+            primary = arg1
+        if int(primary) != self.pdgid_meson:
+            return 0.0
+        return self._total_width
+
+    def TotalDecayWidthForFinalState(self, record):
+        if int(record.signature.primary_type) != self.pdgid_meson:
+            return 0.0
+        return self._total_width
+
+    def DifferentialDecayWidth(self, record):
+        if int(record.signature.primary_type) != self.pdgid_meson:
+            return 0.0
+        return self._total_width / (4.0 * math.pi)
+
+    def save_to_table(self, table_subdir=None):
+        pass
+
+    def SampleFinalState(self, record, random):
+        P_parent = np.array(record.primary_momentum)
+        p_cm = _two_body_p_cm(self.m_meson, self.m_lepton, self.m_nu)
+
+        cos_theta = random.Uniform(-1.0, 1.0)
+        phi = random.Uniform(0.0, 2.0 * math.pi)
+
+        P_lep = _boost_to_lab(P_parent, p_cm, cos_theta, phi, self.m_lepton)
+        P_nu = _boost_to_lab(P_parent, p_cm, -cos_theta, phi + math.pi, self.m_nu)
+
+        for sec in record.get_secondary_particle_records():
+            if int(sec.type) == self.pdgid_lepton:
+                sec.four_momentum = P_lep
+                sec.mass = self.m_lepton
+            elif int(sec.type) == self.pdgid_neutrino:
+                sec.four_momentum = P_nu
+                sec.mass = self.m_nu
+        return record
+
+
+# ===================================================================
+#  build_phi_flux  --  construct mediator flux at detector
+# ===================================================================
+
+def build_phi_flux(
+    m_meson,
+    m_lepton,
+    m_phi,
+    g_mu,
+    mediator_type="scalar",
+    flux_tag="pion_numu",
+    min_energy=0.0,
+    max_energy=3.0,
+    n_bins=50,
+    physically_normalized=True,
+):
+    """
+    Construct the scalar/pseudoscalar mediator phi flux at the detector
+    by convolving the parent meson spectrum with the three-body
+    differential decay rate and boosting to the lab frame.
+
+    Returns a siren.distributions.TabulatedFluxDistribution.
+    """
+    import siren
+
+    raw_flux = siren.utilities.load_flux(
+        "PionKaon",
+        tag=flux_tag,
+        physically_normalized=physically_normalized,
+    )
+
+    try:
+        decay = MesonThreeBodyDecay(m_meson, m_lepton, m_phi, g_mu, mediator_type)
+    except ValueError:
+        energies = [min_energy, max_energy]
+        flux_arr = [0.0, 0.0]
+        return siren.distributions.TabulatedFluxDistribution(
+            min_energy, max_energy, energies, flux_arr, physically_normalized
+        )
+
+    E_phi_rf_max = decay.E_phi_max
+    if E_phi_rf_max <= m_phi:
+        energies = [min_energy, max_energy]
+        flux_arr = [0.0, 0.0]
+        return siren.distributions.TabulatedFluxDistribution(
+            min_energy, max_energy, energies, flux_arr, physically_normalized
+        )
+
+    n_rf = 200
+    E_phi_rf = np.linspace(m_phi, E_phi_rf_max, n_rf)
+    dGamma = decay.differential_decay_rate(E_phi_rf)
+
+    E_phi_out = np.linspace(min_energy, max_energy, n_bins)
+    phi_flux = np.zeros(n_bins)
+    dEout = (max_energy - min_energy) / (n_bins - 1) if n_bins > 1 else 1.0
+    dErf = (E_phi_rf_max - m_phi) / (n_rf - 1) if n_rf > 1 else 1.0
+
+    nu_energies = list(raw_flux.GetEnergyNodes())
+
+    E_nu_rf_2body = (m_meson**2 - m_lepton**2) / (2.0 * m_meson)
+    nu_to_meson = m_meson / E_nu_rf_2body if E_nu_rf_2body > 0 else 1.0
+
+    for E_nu in nu_energies:
+        E_meson = E_nu * nu_to_meson
+        if E_meson < m_meson:
+            continue
+
+        meson_flux = raw_flux.EvaluatePDF(E_nu)
+        if meson_flux <= 0.0:
+            continue
+
+        p_meson = math.sqrt(max(E_meson**2 - m_meson**2, 0.0))
+        gamma = E_meson / m_meson
+        beta = p_meson / E_meson if E_meson > 0 else 0.0
+
+        for j in range(n_rf):
+            Erf = E_phi_rf[j]
+            dG = dGamma[j]
+            if dG <= 0.0:
+                continue
+
+            p_rf = math.sqrt(max(Erf**2 - m_phi**2, 0.0))
+            E_lo = gamma * (Erf - beta * p_rf)
+            E_hi = gamma * (Erf + beta * p_rf)
+
+            if E_hi <= min_energy or E_lo >= max_energy:
+                continue
+            dE_lab = max(E_hi - E_lo, 1e-9)
+            density = dG * dErf / dE_lab * meson_flux
+
+            for k in range(n_bins):
+                Eout = E_phi_out[k]
+                bin_lo = Eout - 0.5 * dEout
+                bin_hi = Eout + 0.5 * dEout
+                if bin_lo < E_hi and bin_hi > E_lo:
+                    overlap = min(bin_hi, E_hi) - max(bin_lo, E_lo)
+                    phi_flux[k] += density * overlap
+
+    return siren.distributions.TabulatedFluxDistribution(
+        min_energy, max_energy, list(E_phi_out), list(phi_flux), physically_normalized
+    )
