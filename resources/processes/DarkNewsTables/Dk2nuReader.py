@@ -124,6 +124,8 @@ def read_dk2nu(
 
     for fname in filenames:
         f = uproot.open(fname)
+        if "dk2nuTree" not in [k.split(";")[0] for k in f.keys()]:
+            continue
         tree = f["dk2nuTree"]
         branches = _detect_branches(tree)
 

@@ -28,25 +28,40 @@ from siren import utilities
 from siren._util import GenerateEvents
 
 # ---------------------------------------------------------------------------
-# Import model classes
+# Import model classes via SIREN's module loader
 # ---------------------------------------------------------------------------
-from siren.resources.processes.DarkNewsTables.MesonProduction import (
-    MesonThreeBodySIRENDecay,
+from siren import _util as _siren_util
+
+_dt_base = os.path.join(
+    _siren_util.resource_package_dir(), "processes", "DarkNewsTables",
 )
-from siren.resources.processes.DarkNewsTables.VectorPortal import (
-    VectorPortalUpsCase,
-    ChiPrimeDecay,
-    DarkPhotonDecay,
+
+_mod_mp = _siren_util.load_module(
+    "siren.resources.processes.DarkNewsTables.MesonProduction",
+    os.path.join(_dt_base, "MesonProduction.py"),
 )
-from siren.resources.processes.DarkNewsTables.DarkNewsCrossSection import (
-    PyDarkNewsCrossSection,
+_mod_vp = _siren_util.load_module(
+    "siren.resources.processes.DarkNewsTables.VectorPortal",
+    os.path.join(_dt_base, "VectorPortal.py"),
 )
-from siren.resources.processes.DarkNewsTables.Dk2nuReader import (
-    read_dk2nu,
-    dk2nu_to_csv,
-    print_summary,
-    PTYPE_PIPLUS,
+_mod_xs = _siren_util.load_module(
+    "siren.resources.processes.DarkNewsTables.DarkNewsCrossSection",
+    os.path.join(_dt_base, "DarkNewsCrossSection.py"),
 )
+_mod_dk = _siren_util.load_module(
+    "siren.resources.processes.DarkNewsTables.Dk2nuReader",
+    os.path.join(_dt_base, "Dk2nuReader.py"),
+)
+
+MesonThreeBodySIRENDecay = _mod_mp.MesonThreeBodySIRENDecay
+VectorPortalUpsCase = _mod_vp.VectorPortalUpsCase
+ChiPrimeDecay = _mod_vp.ChiPrimeDecay
+DarkPhotonDecay = _mod_vp.DarkPhotonDecay
+PyDarkNewsCrossSection = _mod_xs.PyDarkNewsCrossSection
+read_dk2nu = _mod_dk.read_dk2nu
+dk2nu_to_csv = _mod_dk.dk2nu_to_csv
+print_summary = _mod_dk.print_summary
+PTYPE_PIPLUS = _mod_dk.PTYPE_PIPLUS
 
 # ---------------------------------------------------------------------------
 # Model parameters (Dutta et al. Table I, double-mediator)
