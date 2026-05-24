@@ -364,7 +364,7 @@ class MesonSimpleDecay(_Decay):
             return self.GetPossibleSignatures()
         return []
 
-    def TotalDecayWidth(self, arg1):
+    def TotalDecayWidthAllFinalStates(self, arg1):
         if isinstance(arg1, dataclasses.InteractionRecord):
             primary = arg1.signature.primary_type
         else:
@@ -373,7 +373,7 @@ class MesonSimpleDecay(_Decay):
             return 0.0
         return self._total_width
 
-    def TotalDecayWidthForFinalState(self, record):
+    def TotalDecayWidth(self, record):
         if int(record.signature.primary_type) != self.pdgid_meson:
             return 0.0
         return self._total_width
@@ -673,7 +673,7 @@ class MesonThreeBodySIRENDecay(_Decay):
             return self.GetPossibleSignatures()
         return []
 
-    def TotalDecayWidth(self, arg1):
+    def TotalDecayWidthAllFinalStates(self, arg1):
         if isinstance(arg1, dataclasses.InteractionRecord):
             primary = arg1.signature.primary_type
         else:
@@ -682,7 +682,7 @@ class MesonThreeBodySIRENDecay(_Decay):
             return 0.0
         return self._total_width
 
-    def TotalDecayWidthForFinalState(self, record):
+    def TotalDecayWidth(self, record):
         if int(record.signature.primary_type) != self.pdgid_meson:
             return 0.0
         return self._total_width
@@ -868,7 +868,7 @@ class BiasedMesonThreeBodyDecay(_Decay):
             return self.GetPossibleSignatures()
         return []
 
-    def TotalDecayWidth(self, arg1):
+    def TotalDecayWidthAllFinalStates(self, arg1):
         if isinstance(arg1, dataclasses.InteractionRecord):
             primary = arg1.signature.primary_type
         else:
@@ -877,7 +877,7 @@ class BiasedMesonThreeBodyDecay(_Decay):
             return 0.0
         return self._total_width
 
-    def TotalDecayWidthForFinalState(self, record):
+    def TotalDecayWidth(self, record):
         if int(record.signature.primary_type) != self.pdgid_meson:
             return 0.0
         return self._total_width

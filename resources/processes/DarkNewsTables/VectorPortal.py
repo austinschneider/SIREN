@@ -520,7 +520,7 @@ class ChiPrimeDecay(_Decay):
             return self.GetPossibleSignatures()
         return []
 
-    def TotalDecayWidth(self, arg1):
+    def TotalDecayWidthAllFinalStates(self, arg1):
         if isinstance(arg1, dataclasses.InteractionRecord):
             primary = arg1.signature.primary_type
         else:
@@ -529,7 +529,7 @@ class ChiPrimeDecay(_Decay):
             return 0.0
         return self._total_width
 
-    def TotalDecayWidthForFinalState(self, record):
+    def TotalDecayWidth(self, record):
         if int(record.signature.primary_type) != self.pdgid_chi_prime:
             return 0.0
         return self._total_width
@@ -616,7 +616,7 @@ class DarkPhotonDecay(_Decay):
             return self.GetPossibleSignatures()
         return []
 
-    def TotalDecayWidth(self, arg1):
+    def TotalDecayWidthAllFinalStates(self, arg1):
         if isinstance(arg1, dataclasses.InteractionRecord):
             primary = arg1.signature.primary_type
         else:
@@ -625,7 +625,7 @@ class DarkPhotonDecay(_Decay):
             return 0.0
         return self._total_width
 
-    def TotalDecayWidthForFinalState(self, record):
+    def TotalDecayWidth(self, record):
         if int(record.signature.primary_type) != self.pdgid_V1:
             return 0.0
         return self._total_width
@@ -729,7 +729,7 @@ class DarkPhotonToChiDecay(_Decay):
             return self.GetPossibleSignatures()
         return []
 
-    def TotalDecayWidth(self, arg1):
+    def TotalDecayWidthAllFinalStates(self, arg1):
         if isinstance(arg1, dataclasses.InteractionRecord):
             primary = arg1.signature.primary_type
         else:
@@ -738,7 +738,7 @@ class DarkPhotonToChiDecay(_Decay):
             return 0.0
         return self._total_width
 
-    def TotalDecayWidthForFinalState(self, record):
+    def TotalDecayWidth(self, record):
         if int(record.signature.primary_type) != self.pdgid_V1:
             return 0.0
         return self._total_width
@@ -853,7 +853,7 @@ class BiasedDarkPhotonToChiDecay(_Decay):
             return self.GetPossibleSignatures()
         return []
 
-    def TotalDecayWidth(self, arg1):
+    def TotalDecayWidthAllFinalStates(self, arg1):
         if isinstance(arg1, dataclasses.InteractionRecord):
             primary = arg1.signature.primary_type
         else:
@@ -862,7 +862,7 @@ class BiasedDarkPhotonToChiDecay(_Decay):
             return 0.0
         return self._total_width
 
-    def TotalDecayWidthForFinalState(self, record):
+    def TotalDecayWidth(self, record):
         if int(record.signature.primary_type) != self.pdgid_V1:
             return 0.0
         return self._total_width
