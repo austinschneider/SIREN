@@ -53,10 +53,8 @@ _mod_dk = _siren_util.load_module(
 )
 
 MesonThreeBodySIRENDecay = _mod_mp.MesonThreeBodySIRENDecay
-VectorPortalUpsCase = _mod_vp.VectorPortalUpsCase
-ChiPrimeDecay = _mod_vp.ChiPrimeDecay
+VectorPortalOffShellXS = _mod_vp.VectorPortalOffShellXS
 DarkPhotonDecay = _mod_vp.DarkPhotonDecay
-PyDarkNewsCrossSection = _mod_xs.PyDarkNewsCrossSection
 read_dk2nu = _mod_dk.read_dk2nu
 dk2nu_to_primary_distribution = _mod_dk.dk2nu_to_primary_distribution
 print_summary = _mod_dk.print_summary
@@ -114,10 +112,9 @@ detector_model = utilities.load_detector("SBN", detector="SBND")
 
 # dk2nu positions are in BNB (geometry) coordinates (cm).
 # SIREN's injector works in detector-local coordinates (m).
-pion_type      = siren.dataclasses.Particle.ParticleType(PDGID_PION)
-v1_type        = siren.dataclasses.Particle.ParticleType(PDGID_V1)
-chi_type       = siren.dataclasses.Particle.ParticleType(PDGID_CHI)
-chi_prime_type = siren.dataclasses.Particle.ParticleType(PDGID_CHI_PRIME)
+pion_type = siren.dataclasses.Particle.ParticleType(PDGID_PION)
+v1_type   = siren.dataclasses.Particle.ParticleType(PDGID_V1)
+chi_type  = siren.dataclasses.Particle.ParticleType(PDGID_CHI)
 
 # ---------------------------------------------------------------------------
 # 3. Set up processes
@@ -138,22 +135,15 @@ pion_decay = MesonThreeBodySIRENDecay(
 )
 print(f"  Pion 3-body width: {pion_decay._total_width:.4e} GeV")
 
-# V1 -> chi chi' (if kinematically allowed) or V1 -> e+e-
-v1_to_chi = None
-if M_V1 > M_CHI + M_CHI_PRIME:
-    v1_to_chi = ChiPrimeDecay(
-        M_CHI, M_CHI_PRIME, M_V1, G_D,
-        pdgid_chi_prime=PDGID_CHI_PRIME,
-        pdgid_chi=PDGID_CHI,
-        pdgid_V1=PDGID_V1,
-    )
-v1_to_ee = DarkPhotonDecay(M_V1, EPSILON_1, pdgid_V1=PDGID_V1)
+# V1 produced in pion decay -> e+e- (first V1 in chain)
+v1_to_ee_production = DarkPhotonDecay(M_V1, EPSILON_1, pdgid_V1=PDGID_V1)
 
-# chi N -> chi' N upscattering
-ups_case = VectorPortalUpsCase(
+# chi + Ar -> chi + V1 + Ar  (off-shell chi', single vertex)
+offshell_xs = VectorPortalOffShellXS(
     m_chi=M_CHI,
     m_chi_prime=M_CHI_PRIME,
-    m_V=M_V2,
+    m_V1=M_V1,
+    m_V2=M_V2,
     g_D=G_D,
     epsilon=EPSILON_2,
     nuclear_pdgid=1000180400,
@@ -161,28 +151,18 @@ ups_case = VectorPortalUpsCase(
     nuclear_name="Ar40",
     A=40, Z=18,
 )
-xs = PyDarkNewsCrossSection(ups_case, always_interpolate=True)
-print(f"  chi upscattering threshold: {ups_case.Ethreshold:.4f} GeV")
+print(f"  chi scattering threshold: {offshell_xs._ups.Ethreshold:.4f} GeV")
 
-# chi' -> chi V1
-chi_prime_decay = ChiPrimeDecay(
-    M_CHI, M_CHI_PRIME, M_V1, G_D,
-    pdgid_chi_prime=PDGID_CHI_PRIME,
-    pdgid_chi=PDGID_CHI,
-    pdgid_V1=PDGID_V1,
-)
-print(f"  chi' decay width: {chi_prime_decay._total_width:.4e} GeV")
+# V1 from the scattering vertex -> e+e-  (second V1 in chain)
+v1_to_ee_signal = DarkPhotonDecay(M_V1, EPSILON_1, pdgid_V1=PDGID_V1)
 
 # Assemble process collections
 primary_processes = {pion_type: [pion_decay]}
 
 secondary_processes = {
-    v1_type: [v1_to_ee],
-    chi_type: [xs],
-    chi_prime_type: [chi_prime_decay],
+    v1_type: [v1_to_ee_production],
+    chi_type: [offshell_xs],
 }
-if v1_to_chi is not None:
-    secondary_processes[v1_type].insert(0, v1_to_chi)
 
 # ---------------------------------------------------------------------------
 # 4. Distributions

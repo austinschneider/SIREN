@@ -21,7 +21,7 @@ import math
 import numpy as np
 import scipy.integrate as _integrate
 
-from siren.interactions import DarkNewsDecay
+from siren.interactions import DarkNewsDecay, DarkNewsCrossSection
 from siren import dataclasses
 from siren.dataclasses import Particle
 
@@ -235,6 +235,228 @@ class VectorPortalUpsCase:
             limit=80, epsrel=1e-4,
         )
         return max(0.0, result)
+
+
+# ===================================================================
+#  VectorPortalOffShellXS  --  chi N -> chi V1 N  (off-shell chi')
+# ===================================================================
+
+class VectorPortalOffShellXS(DarkNewsCrossSection):
+    """
+    Off-shell chi' scattering: chi + N -> chi + V1 + N.
+
+    Uses the narrow-width factorization internally:
+        dsigma(chi N -> chi V1 N) = dsigma(chi N -> chi' N) * BR(chi' -> chi V1)
+    with BR = 1 for the benchmark parameters.
+
+    The cross section is identical to VectorPortalUpsCase, but the
+    signature produces 3 secondaries (chi, V1, recoil nucleus) instead
+    of 2 (chi', nucleus).  SampleFinalState generates chi' internally,
+    decays it to chi + V1 isotropically, and returns 3 secondary momenta.
+    """
+
+    def __init__(
+        self,
+        m_chi,
+        m_chi_prime,
+        m_V1,
+        m_V2,
+        g_D,
+        epsilon,
+        *,
+        pdgid_chi=5917,
+        pdgid_V1=5922,
+        nuclear_pdgid=1000180400,
+        nuclear_mass=37.215,
+        nuclear_name="Ar40",
+        A=40,
+        Z=18,
+    ):
+        DarkNewsCrossSection.__init__(self)
+
+        self.m_chi = m_chi
+        self.m_chi_prime = m_chi_prime
+        self.m_V1 = m_V1
+        self.m_V2 = m_V2
+        self.g_D = g_D
+        self.epsilon = epsilon
+        self.A = A
+        self.Z = Z
+
+        self.pdgid_chi = pdgid_chi
+        self.pdgid_V1 = pdgid_V1
+        self.nuclear_pdgid = nuclear_pdgid
+
+        self.m_ups = m_chi_prime
+        self.m_target = nuclear_mass
+
+        self._ups = VectorPortalUpsCase(
+            m_chi=m_chi, m_chi_prime=m_chi_prime, m_V=m_V2,
+            g_D=g_D, epsilon=epsilon,
+            pdgid_chi=pdgid_chi, pdgid_chi_prime=5918,
+            nuclear_pdgid=nuclear_pdgid, nuclear_mass=nuclear_mass,
+            nuclear_name=nuclear_name, A=A, Z=Z,
+        )
+
+    def GetPossiblePrimaries(self):
+        return [Particle.ParticleType(self.pdgid_chi)]
+
+    def GetPossibleTargets(self):
+        target_type = Particle.ParticleType(self.nuclear_pdgid)
+        if target_type == Particle.ParticleType.PPlus:
+            target_type = Particle.ParticleType.HNucleus
+        return [target_type]
+
+    def GetPossibleTargetsFromPrimary(self, primary_type):
+        if int(primary_type) == self.pdgid_chi:
+            return self.GetPossibleTargets()
+        return []
+
+    def GetPossibleSignatures(self):
+        sig = dataclasses.InteractionSignature()
+        sig.primary_type = Particle.ParticleType(self.pdgid_chi)
+        target_type = Particle.ParticleType(self.nuclear_pdgid)
+        if target_type == Particle.ParticleType.PPlus:
+            target_type = Particle.ParticleType.HNucleus
+        sig.target_type = target_type
+        sig.secondary_types = [
+            Particle.ParticleType(self.pdgid_chi),
+            Particle.ParticleType(self.pdgid_V1),
+            target_type,
+        ]
+        return [sig]
+
+    def GetPossibleSignaturesFromParents(self, primary_type, target_type):
+        if int(primary_type) == self.pdgid_chi:
+            expected_target = Particle.ParticleType(self.nuclear_pdgid)
+            if expected_target == Particle.ParticleType.PPlus:
+                expected_target = Particle.ParticleType.HNucleus
+            if target_type == expected_target:
+                return self.GetPossibleSignatures()
+        return []
+
+    def TotalCrossSection(self, arg1, energy=None, target=None):
+        if isinstance(arg1, dataclasses.InteractionRecord):
+            energy = arg1.primary_momentum[0]
+            primary = arg1.signature.primary_type
+        else:
+            primary = arg1
+        if int(primary) != self.pdgid_chi:
+            return 0.0
+        return self._ups.total_xsec(energy)
+
+    def DifferentialCrossSection(self, arg1, target=None, energy=None, Q2=None):
+        if isinstance(arg1, dataclasses.InteractionRecord):
+            record = arg1
+            m1sq = max(0.0, record.primary_momentum[0]**2 - sum(p**2 for p in record.primary_momentum[1:]))
+            m3sq = max(0.0, record.secondary_momenta[0][0]**2 - sum(p**2 for p in record.secondary_momenta[0][1:]))
+            p1p3 = record.primary_momentum[0] * record.secondary_momenta[0][0] - sum(
+                p1 * p3 for p1, p3 in zip(record.primary_momentum[1:], record.secondary_momenta[0][1:]))
+            Q2 = max(0.0, -(m1sq + m3sq - 2 * p1p3))
+            energy = record.primary_momentum[0]
+        return float(np.real(self._ups.diff_xsec_Q2(energy, Q2)))
+
+    def InteractionThreshold(self, interaction):
+        return self._ups.Ethreshold
+
+    def Q2Min(self, interaction):
+        return _Q2min(interaction.primary_momentum[0], self.m_chi_prime, self.m_target)
+
+    def Q2Max(self, interaction):
+        return _Q2max(interaction.primary_momentum[0], self.m_chi_prime, self.m_target)
+
+    def TargetMass(self, target_type):
+        return self.m_target
+
+    def SecondaryMasses(self, secondary_types):
+        return [self.m_chi, self.m_V1, self.m_target]
+
+    def SecondaryHelicities(self, record):
+        return [record.primary_helicity, 0, record.target_helicity]
+
+    def FinalStateProbability(self, record):
+        return 1.0
+
+    def DensityVariables(self):
+        return ["Q2"]
+
+    def SampleFinalState(self, record, random):
+        """Sample chi' on-shell from Q2, then decay chi' -> chi + V1 isotropically."""
+        E_chi = record.primary_momentum[0]
+        M = self.m_target
+        m_chi = self.m_chi
+        m_chi_prime = self.m_chi_prime
+
+        q2min = _Q2min(E_chi, m_chi_prime, M)
+        q2max = _Q2max(E_chi, m_chi_prime, M)
+        if q2max <= q2min:
+            return record
+
+        Q2 = random.Uniform(q2min, q2max)
+
+        s = m_chi**2 + M**2 + 2.0 * M * E_chi
+        E_chi_prime_cm = (s + m_chi_prime**2 - M**2) / (2.0 * math.sqrt(s))
+        E_N_cm = (s - m_chi_prime**2 + M**2) / (2.0 * math.sqrt(s))
+        p_out_cm = math.sqrt(max(E_chi_prime_cm**2 - m_chi_prime**2, 0.0))
+
+        E_in_cm = (s + m_chi**2 - M**2) / (2.0 * math.sqrt(s))
+        p_in_cm = math.sqrt(max(E_in_cm**2 - m_chi**2, 0.0))
+
+        cos_cm = 1.0 - Q2 / (2.0 * p_in_cm * p_out_cm) if p_in_cm > 0 and p_out_cm > 0 else 0.0
+        cos_cm = max(-1.0, min(1.0, cos_cm))
+
+        gamma_cm = (E_chi + M) / math.sqrt(s)
+        beta_cm = math.sqrt(max(E_chi**2 - m_chi**2, 0.0)) / (E_chi + M)
+
+        phi_cm = random.Uniform(0.0, 2.0 * math.pi)
+        sin_cm = math.sqrt(max(1.0 - cos_cm**2, 0.0))
+
+        px_cp = p_out_cm * sin_cm * math.cos(phi_cm)
+        py_cp = p_out_cm * sin_cm * math.sin(phi_cm)
+        pz_cp = p_out_cm * cos_cm
+
+        E_cp_lab = gamma_cm * (E_chi_prime_cm + beta_cm * pz_cp)
+        pz_cp_lab = gamma_cm * (pz_cp + beta_cm * E_chi_prime_cm)
+
+        P_chi_prime = np.array([E_cp_lab, px_cp, py_cp, pz_cp_lab])
+
+        p_decay = _two_body_p_cm(m_chi_prime, m_chi, self.m_V1)
+        cos_dec = random.Uniform(-1.0, 1.0)
+        phi_dec = random.Uniform(0.0, 2.0 * math.pi)
+
+        P_chi_out = _boost_to_lab(P_chi_prime, p_decay, cos_dec, phi_dec, m_chi)
+        P_V1 = _boost_to_lab(P_chi_prime, p_decay, -cos_dec, phi_dec + math.pi, self.m_V1)
+
+        E_N_lab = gamma_cm * (E_N_cm - beta_cm * pz_cp)
+        pz_N_lab = gamma_cm * (-pz_cp + beta_cm * E_N_cm)
+        P_N = np.array([E_N_lab, -px_cp, -py_cp, pz_N_lab])
+
+        p_pi_dir = np.array(record.primary_momentum[1:])
+        p_pi_mag = np.linalg.norm(p_pi_dir)
+        if p_pi_mag > 1e-12:
+            z_hat = p_pi_dir / p_pi_mag
+            arb = np.array([0, 1, 0]) if abs(z_hat[1]) < 0.9 else np.array([1, 0, 0])
+            x_hat = np.cross(z_hat, arb)
+            x_hat /= np.linalg.norm(x_hat)
+            y_hat = np.cross(z_hat, x_hat)
+            R = np.column_stack([x_hat, y_hat, z_hat])
+
+            for P in [P_chi_out, P_V1, P_N]:
+                P[1:] = R @ P[1:]
+
+        secondaries = record.get_secondary_particle_records()
+        for sec in secondaries:
+            pid = int(sec.type)
+            if pid == self.pdgid_chi:
+                sec.four_momentum = P_chi_out
+                sec.mass = m_chi
+            elif pid == self.pdgid_V1:
+                sec.four_momentum = P_V1
+                sec.mass = self.m_V1
+            else:
+                sec.four_momentum = P_N
+                sec.mass = M
+        return record
 
 
 # ===================================================================
