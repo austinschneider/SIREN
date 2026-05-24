@@ -100,7 +100,7 @@ double pyDecay::DifferentialDecayWidth(dataclasses::InteractionRecord const & in
 }
 
 void pyDecay::SampleFinalState(dataclasses::CrossSectionDistributionRecord & record, std::shared_ptr<siren::utilities::SIREN_random> random) const {
-    SELF_OVERRIDE_PURE(
+    SELF_OVERRIDE_PURE_REF(
         self,
         Decay,
         void,
@@ -126,8 +126,8 @@ std::vector<siren::dataclasses::InteractionSignature> pyDecay::GetPossibleSignat
         self,
         Decay,
         std::vector<siren::dataclasses::InteractionSignature>,
-        GetPossibleSignaturesFromParents,
-        "GetPossibleSignaturesFromParents",
+        GetPossibleSignaturesFromParent,
+        "GetPossibleSignaturesFromParent",
         primary_type
     )
 }

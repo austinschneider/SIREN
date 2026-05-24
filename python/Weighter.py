@@ -101,8 +101,7 @@ class Weighter:
             raise ValueError("Primary type has not been set.")
         if len(self.__primary_interactions) == 0:
             raise ValueError("Primary interactions have not been set.")
-        if len(self.__primary_physical_distributions) == 0:
-            raise ValueError("Primary physical distributions have not been set.")
+        # primary physical distributions can be empty for external primaries
     
         injectors = [injector._Injector__injector if isinstance(injector, _PyInjector) else injector for injector in self.__injectors]
 

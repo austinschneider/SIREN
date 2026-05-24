@@ -21,7 +21,7 @@ import math
 import numpy as np
 import scipy.integrate as _integrate
 
-from siren.interactions import DarkNewsDecay, DarkNewsCrossSection
+from siren.interactions import Decay as _Decay, CrossSection as _CrossSection
 from siren import dataclasses
 from siren.dataclasses import Particle
 
@@ -242,7 +242,7 @@ class VectorPortalUpsCase:
 #  VectorPortalOffShellXS  --  chi N -> chi V1 N  (off-shell chi')
 # ===================================================================
 
-class VectorPortalOffShellXS(DarkNewsCrossSection):
+class VectorPortalOffShellXS(_CrossSection):
     """
     Off-shell chi' scattering: chi + N -> chi + V1 + N.
 
@@ -273,7 +273,7 @@ class VectorPortalOffShellXS(DarkNewsCrossSection):
         A=40,
         Z=18,
     ):
-        DarkNewsCrossSection.__init__(self)
+        _CrossSection.__init__(self)
 
         self.m_chi = m_chi
         self.m_chi_prime = m_chi_prime
@@ -381,6 +381,9 @@ class VectorPortalOffShellXS(DarkNewsCrossSection):
     def DensityVariables(self):
         return ["Q2"]
 
+    def equal(self, other):
+        return self is other
+
     def SampleFinalState(self, record, random):
         """Sample chi' on-shell from Q2, then decay chi' -> chi + V1 isotropically."""
         E_chi = record.primary_momentum[0]
@@ -464,7 +467,7 @@ class VectorPortalOffShellXS(DarkNewsCrossSection):
 #  ChiPrimeDecay  --  chi' -> chi + V1
 # ===================================================================
 
-class ChiPrimeDecay(DarkNewsDecay):
+class ChiPrimeDecay(_Decay):
     """
     Two-body decay chi' -> chi + V1.
     Width: Gamma = (g_D^2 / 48 pi) m_chi' lambda^{3/2}(1, r_chi^2, r_V^2)
@@ -482,7 +485,7 @@ class ChiPrimeDecay(DarkNewsDecay):
         pdgid_V1=5922,
         table_dir=None,
     ):
-        DarkNewsDecay.__init__(self)
+        _Decay.__init__(self)
         self.m_chi = m_chi
         self.m_chi_prime = m_chi_prime
         self.m_V1 = m_V1
@@ -539,6 +542,9 @@ class ChiPrimeDecay(DarkNewsDecay):
     def save_to_table(self, table_subdir=None):
         pass
 
+    def equal(self, other):
+        return self is other
+
     def SampleFinalState(self, record, random):
         P_parent = np.array(record.primary_momentum)
         p_cm = _two_body_p_cm(self.m_chi_prime, self.m_chi, self.m_V1)
@@ -563,7 +569,7 @@ class ChiPrimeDecay(DarkNewsDecay):
 #  DarkPhotonDecay  --  V1 -> e- e+
 # ===================================================================
 
-class DarkPhotonDecay(DarkNewsDecay):
+class DarkPhotonDecay(_Decay):
     """
     Two-body decay V1 -> e- e+.
     Width: Gamma = (alpha epsilon^2 m_V / 3) sqrt(1 - 4 m_e^2/m_V^2) (1 + 2 m_e^2/m_V^2)
@@ -578,7 +584,7 @@ class DarkPhotonDecay(DarkNewsDecay):
         pdgid_V1=5922,
         table_dir=None,
     ):
-        DarkNewsDecay.__init__(self)
+        _Decay.__init__(self)
         self.m_V1 = m_V1
         self.epsilon = epsilon
         self.pdgid_V1 = pdgid_V1
@@ -632,6 +638,9 @@ class DarkPhotonDecay(DarkNewsDecay):
     def save_to_table(self, table_subdir=None):
         pass
 
+    def equal(self, other):
+        return self is other
+
     def SampleFinalState(self, record, random):
         me = _M_ELECTRON
         p_cm = _two_body_p_cm(self.m_V1, me, me)
@@ -663,7 +672,7 @@ class DarkPhotonDecay(DarkNewsDecay):
 #  DarkPhotonToChiDecay  --  V1 -> chi chi_bar
 # ===================================================================
 
-class DarkPhotonToChiDecay(DarkNewsDecay):
+class DarkPhotonToChiDecay(_Decay):
     """
     Two-body decay V1 -> chi chi_bar (dark matter pair production).
 
@@ -686,7 +695,7 @@ class DarkPhotonToChiDecay(DarkNewsDecay):
         pdgid_chi=5917,
         table_dir=None,
     ):
-        DarkNewsDecay.__init__(self)
+        _Decay.__init__(self)
         self.m_V1 = m_V1
         self.m_chi = m_chi
         self.g_D = g_D
@@ -748,6 +757,9 @@ class DarkPhotonToChiDecay(DarkNewsDecay):
     def save_to_table(self, table_subdir=None):
         pass
 
+    def equal(self, other):
+        return self is other
+
     def SampleFinalState(self, record, random):
         p_cm = _two_body_p_cm(self.m_V1, self.m_chi, self.m_chi)
 
@@ -770,7 +782,7 @@ class DarkPhotonToChiDecay(DarkNewsDecay):
 #  BiasedDarkPhotonToChiDecay  --  V1 -> chi chi_bar (cone-biased)
 # ===================================================================
 
-class BiasedDarkPhotonToChiDecay(DarkNewsDecay):
+class BiasedDarkPhotonToChiDecay(_Decay):
     """
     Biased V1 -> chi chi_bar decay.
 
@@ -793,7 +805,7 @@ class BiasedDarkPhotonToChiDecay(DarkNewsDecay):
         pdgid_chi=5917,
         table_dir=None,
     ):
-        DarkNewsDecay.__init__(self)
+        _Decay.__init__(self)
         self.m_V1 = m_V1
         self.m_chi = m_chi
         self.g_D = g_D
@@ -871,6 +883,9 @@ class BiasedDarkPhotonToChiDecay(DarkNewsDecay):
 
     def save_to_table(self, table_subdir=None):
         pass
+
+    def equal(self, other):
+        return self is other
 
     def SampleFinalState(self, record, random):
         p_cm = _two_body_p_cm(self.m_V1, self.m_chi, self.m_chi)

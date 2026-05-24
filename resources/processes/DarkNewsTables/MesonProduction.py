@@ -17,7 +17,7 @@ import math
 import numpy as np
 import scipy.integrate as _integrate
 
-from siren.interactions import DarkNewsDecay
+from siren.interactions import Decay as _Decay
 from siren import dataclasses
 from siren.dataclasses import Particle
 
@@ -310,7 +310,7 @@ class MesonThreeBodyDecay:
 #  MesonSimpleDecay  --  pi+ -> mu+ nu_mu  (SM two-body)
 # ===================================================================
 
-class MesonSimpleDecay(DarkNewsDecay):
+class MesonSimpleDecay(_Decay):
     """
     SM two-body decay pi+ -> mu+ nu_mu.
     Width: Gamma = G_F^2 f_pi^2 |V_ud|^2 m_pi m_mu^2 (1 - m_mu^2/m_pi^2)^2 / (8 pi)
@@ -326,7 +326,7 @@ class MesonSimpleDecay(DarkNewsDecay):
         pdgid_neutrino=_PDGID_NUMU,
         table_dir=None,
     ):
-        DarkNewsDecay.__init__(self)
+        _Decay.__init__(self)
 
         self.m_meson = m_meson
         self.m_lepton = m_lepton
@@ -385,6 +385,9 @@ class MesonSimpleDecay(DarkNewsDecay):
 
     def save_to_table(self, table_subdir=None):
         pass
+
+    def equal(self, other):
+        return self is other
 
     def SampleFinalState(self, record, random):
         P_parent = np.array(record.primary_momentum)
@@ -588,7 +591,7 @@ def _extract_V_lab_angles(P_parent, P_V_lab, m_M):
 #  MesonThreeBodySIRENDecay -- pi/K -> l nu V1 (physical, SIREN interface)
 # ===================================================================
 
-class MesonThreeBodySIRENDecay(DarkNewsDecay):
+class MesonThreeBodySIRENDecay(_Decay):
     """
     Physical three-body meson decay M -> l nu V1 for SIREN injection.
 
@@ -614,7 +617,7 @@ class MesonThreeBodySIRENDecay(DarkNewsDecay):
         pdgid_mediator=5922,
         table_dir=None,
     ):
-        DarkNewsDecay.__init__(self)
+        _Decay.__init__(self)
 
         self.m_meson = m_meson
         self.m_lepton = m_lepton
@@ -717,6 +720,9 @@ class MesonThreeBodySIRENDecay(DarkNewsDecay):
     def save_to_table(self, table_subdir=None):
         pass
 
+    def equal(self, other):
+        return self is other
+
     def SampleFinalState(self, record, random):
         """Sample from the physical matrix element via rejection sampling."""
         E_nu_rf, E_phi_rf = _sample_rest_frame(self._decay, self._max_matel, random)
@@ -741,7 +747,7 @@ class MesonThreeBodySIRENDecay(DarkNewsDecay):
 #  BiasedMesonThreeBodyDecay -- pi/K -> l nu V1 (biased, cone-directed V1)
 # ===================================================================
 
-class BiasedMesonThreeBodyDecay(DarkNewsDecay):
+class BiasedMesonThreeBodyDecay(_Decay):
     """
     Biased three-body meson decay M -> l nu V1 for SIREN injection.
 
@@ -783,7 +789,7 @@ class BiasedMesonThreeBodyDecay(DarkNewsDecay):
         pdgid_mediator=5922,
         table_dir=None,
     ):
-        DarkNewsDecay.__init__(self)
+        _Decay.__init__(self)
 
         self.m_meson = m_meson
         self.m_lepton = m_lepton
@@ -949,6 +955,9 @@ class BiasedMesonThreeBodyDecay(DarkNewsDecay):
 
     def save_to_table(self, table_subdir=None):
         pass
+
+    def equal(self, other):
+        return self is other
 
     def SampleFinalState(self, record, random):
         """Sample V1 direction from cone toward detector, energy from physical distribution."""
